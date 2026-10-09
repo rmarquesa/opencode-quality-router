@@ -32,7 +32,11 @@ export function capabilityEvidence(state, model, domain, complexity) {
       ? scored.filter((r) => r.passed).length / scored.length
       : undefined,
     methods: [...new Set(scored.map((r) => r.method))],
-    variants: [...new Set(scored.map((r) => r.variant ?? "provider-default"))],
+    variants: [
+      ...new Set(
+        scored.map((r) => r.variant ?? "default/unspecified (not reported)"),
+      ),
+    ],
     lastTestedAt: cells.at(-1)?.checkedAt,
     unavailableTrials: cells.filter((r) => r.status === "unavailable").length,
     confidence: scored.length

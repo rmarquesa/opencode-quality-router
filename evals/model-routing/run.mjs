@@ -9,6 +9,7 @@ import { matrixRows } from "../../src/matrix.mjs";
 import { modelOf, classifyError } from "../../src/routing.mjs";
 import { CASES, parseAnswer } from "./cases.mjs";
 import { ReferenceBudget } from "./budget.mjs";
+import { evaluationRequest } from "./request.mjs";
 const args = process.argv.slice(2);
 const arg = (name, fallback) => {
   const i = args.indexOf(name);
@@ -186,11 +187,11 @@ async function trial(row, c) {
     });
     const m = catalog.get(row.model);
     const variant = ["minimal", "low"].find((v) => m.variants?.[v]);
-    const response = await api(`/session/${session.id}/message`, "POST", {
-      agent: "router-evaluation",
-      model: { ...modelOf(row.model), ...(variant ? { variant } : {}) },
-      parts: [{ type: "text", text: c.instruction }],
-    });
+    const response = await api(
+      `/session/${session.id}/message`,
+      "POST",
+      evaluationRequest(row.model, variant, c.instruction),
+    );
     const text = (response.parts ?? [])
       .filter((p) => p.type === "text")
       .map((p) => p.text)
@@ -203,8 +204,13 @@ async function trial(row, c) {
       );
     const trace = {
       model: row.model,
+      actualModel:
+        response.info?.providerID && response.info?.modelID
+          ? `${response.info.providerID}/${response.info.modelID}`
+          : undefined,
       case: c.id,
-      variant,
+      requestedVariant: variant,
+      variant: response.info?.variant,
       finish: response.info?.finish,
       cost: response.info?.cost,
       tokens: response.info?.tokens,
@@ -220,7 +226,8 @@ async function trial(row, c) {
     const common = {
       ...record,
       elapsedMs: Date.now() - started,
-      variant,
+      requestedVariant: variant,
+      variant: response.info?.variant,
       reportedUSD: response.info?.cost,
       tokens: response.info?.tokens,
     };
@@ -247,6 +254,12 @@ async function trial(row, c) {
         ...common,
         status: "invalid",
         reason: "Output budget reached or no complete answer",
+      });
+    if (trace.actualModel !== row.model)
+      return persist({
+        ...common,
+        status: "invalid",
+        reason: "Actual model identity not confirmed against request",
       });
     let passed = false;
     try {
