@@ -32,6 +32,10 @@ async function fixture(t, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), "opencode-routing-test-"));
   await writeFile(join(dir, "ordered-fallback.mjs"), source);
   await writeFile(
+    join(dir, "errors.mjs"),
+    await readFile(new URL("../src/errors.mjs", import.meta.url)),
+  );
+  await writeFile(
     join(dir, "fallback-routes.json"),
     JSON.stringify({
       ...config,
@@ -507,3 +511,45 @@ for (const text of [
     assert.equal(f.prompts.length, 2);
   });
 }
+
+for (const error of [
+  apiError(400, "Unsupported service_tier: flex"),
+  apiError(410, "Model exo-free has been deprecated."),
+])
+  test(`observed compatibility error ${error.data.statusCode} advances the route`, async (t) => {
+    const f = await fixture(t);
+    await f.send("root", "medium");
+    await f.fail("root", error);
+    await until(() => f.prompts.length === 1);
+    assert.equal(key(f.prompts[0].body.model), config.routes.medium[1]);
+  });
+
+test("an old completed quota task becomes an error in parent context when all recovery attempts fail", async (t) => {
+  const f = await fixture(t, {
+    errors: Object.fromEntries(
+      config.routes.medium.map((m) => [
+        m,
+        apiError(410, "Model backup has been deprecated."),
+      ]),
+    ),
+  });
+  f.sessions.set("child", { id: "child", parentID: "parent" });
+  await f.send("child", "medium", config.routes.medium[1]);
+  await syntheticFailure(f, "child");
+  const context = f.parentContext(),
+    part = context.messages[1].parts[0];
+  part.state.status = "completed";
+  part.state.output = `<task_result>${notice}</task_result>`;
+  await f.h["experimental.chat.messages.transform"]({}, context);
+  assert.equal(part.state.status, "error");
+  assert.match(part.state.error, /quota exhausted/);
+  assert.equal(part.state.output, undefined);
+  assert.equal(part.state.metadata.fallbackRecovered, false);
+  const attempts = f.prompts.length;
+  await f.h["experimental.chat.messages.transform"]({}, context);
+  assert.equal(
+    f.prompts.length,
+    attempts,
+    "Failed historical recovery must not repeat on every parent call",
+  );
+});

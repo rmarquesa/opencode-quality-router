@@ -11,6 +11,7 @@ import {
   classifyError,
 } from "./routing.mjs";
 import { createRecovery } from "./recovery.mjs";
+import { failureBlock, syntheticQuotaError } from "./errors.mjs";
 import {
   selectionPolicy,
   candidateDetails,
@@ -135,11 +136,7 @@ export default async function QualityRouter(
     if (!reason) return;
     if (reason === "quota") await quota.refresh(model.split("/")[0], true);
     await store.update((s) => {
-      s.blocks[model] = {
-        reason,
-        until: Date.now() + config.failureCooldownMs,
-        observedAt: Date.now(),
-      };
+      s.blocks[model] = failureBlock(config, error);
     });
   }
   const recovery = createRecovery({
@@ -147,6 +144,14 @@ export default async function QualityRouter(
     config: { ...config, routes, cooldownMs: config.failureCooldownMs },
     chooseModel: async (route, requested, attempted, sessionID) => {
       const agent = Object.keys(routes).find((a) => routes[a] === route);
+      if (config.objective === "value" && !selections.has(sessionID)) {
+        const session = await client.session.get({ path: { id: sessionID } });
+        if (session.error || !session.data)
+          throw new Error("Cannot verify recovery session");
+        // After restart an old child has no in-memory assessed alternatives.
+        // Its parent must make a new decision, not inherit the entire catalog.
+        if (session.data.parentID) return;
+      }
       return (
         await pick(
           agent,
@@ -485,6 +490,13 @@ export default async function QualityRouter(
           assessment: selected.assessment,
         },
       };
+      const synthetic = syntheticQuotaError(last);
+      if (synthetic) {
+        await markFailure(actual, synthetic);
+        throw new Error(
+          `Subagent failed (task_id: ${child}): provider quota exhausted; no specialist answer was produced.`,
+        );
+      }
     },
     "experimental.chat.messages.transform":
       recovery["experimental.chat.messages.transform"],

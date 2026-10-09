@@ -1,3 +1,4 @@
+export { classifyError } from "./errors.mjs";
 export const keyOf = (m) => (m ? `${m.providerID}/${m.modelID}` : "");
 export function modelOf(key, variant) {
   const i = key.indexOf("/");
@@ -48,6 +49,7 @@ export function validateConfig(config) {
   for (const [k, fallback] of [
     ["quotaTtlMs", 60000],
     ["failureCooldownMs", 900000],
+    ["compatibilityCooldownMs", 86400000],
     ["retryDelayMs", 1000],
   ]) {
     config[k] ??= fallback;
@@ -56,50 +58,14 @@ export function validateConfig(config) {
   }
   return config;
 }
-export function classifyError(error) {
-  if (!error) return undefined;
-  const d = error.data ?? error;
-  const message = `${d.message ?? ""} ${d.responseBody ?? ""} ${error.message ?? ""}`;
-  if (
-    /Abort|ContentFilter|ContextOverflow|Permission|Rejected|StructuredOutput/.test(
-      error.name ?? "",
-    ) ||
-    /safety|content.?filter|context.{0,25}(length|window|limit)|invalid.{0,20}(schema|tool)|permission rejected|user.{0,15}(cancel|abort)/i.test(
-      message,
-    )
-  )
-    return undefined;
-  const status = Number(d.statusCode ?? error.statusCode ?? error.status);
-  if (
-    /quota|rate.?limit|usage.{0,25}(exceed|exhaust|limit)|insufficient.{0,10}credits/i.test(
-      message,
-    ) ||
-    status === 429
-  )
-    return "quota";
-  if ([401, 403].includes(status) || /ProviderAuthError/.test(error.name ?? ""))
-    return "auth";
-  if (
-    [402, 404].includes(status) ||
-    /ModelNotFoundError/.test(error.name ?? "") ||
-    /model.{0,30}(disabled|unavailable|not found|not supported)|no.{0,15}valid license/i.test(
-      message,
-    )
-  )
-    return "unavailable";
-  if (
-    [408, 500, 502, 503, 504, 529].includes(status) ||
-    /ECONNRESET|ETIMEDOUT|fetch failed|service unavailable/i.test(message)
-  )
-    return "transient";
-  return undefined;
-}
 export function availability(candidate, observation, block, now, ttl) {
-  if (block?.until > now)
+  if (block?.permanent || block?.until > now)
     return {
       status: "blocked",
       reason: block.reason,
-      retryAt: new Date(block.until).toISOString(),
+      retryAt: block.permanent
+        ? undefined
+        : new Date(block.until).toISOString(),
     };
   if (!observation)
     return { status: "unknown", reason: "No quota adapter or observation" };
@@ -187,14 +153,23 @@ export function candidatesFor(config, agent, catalog, state, now = Date.now()) {
     .map((c, rank) => ({
       ...c,
       rank: rank + 1,
-      availability: availability(
-        c,
-        state.observations[c.model.split("/")[0]],
-        state.blocks[c.model],
-        now,
-        config.quotaTtlMs,
-      ),
+      availability:
+        catalogAvailability(catalog.get?.(c.model)) ??
+        availability(
+          c,
+          state.observations[c.model.split("/")[0]],
+          state.blocks[c.model],
+          now,
+          config.quotaTtlMs,
+        ),
     }));
+}
+export function catalogAvailability(model) {
+  if (["deprecated", "retired", "disabled"].includes(model?.status))
+    return {
+      status: "blocked",
+      reason: `Catalog marks this model ${model.status}`,
+    };
 }
 export function selectCandidate(
   candidates,

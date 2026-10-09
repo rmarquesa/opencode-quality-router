@@ -143,6 +143,7 @@ The default file is `$XDG_CONFIG_HOME/opencode/quality-router.json`, or `~/.conf
 | Candidate `billingGroup`       | `premium` for Copilot                            | `premium`, `chat`, or `completions`; only override after verifying the model's billing behavior |
 | `quotaTtlMs`                   | `60000`                                          | Quota cache freshness period                                                                    |
 | `failureCooldownMs`            | `900000`                                         | Temporary per-model block after a recoverable provider failure                                  |
+| `compatibilityCooldownMs`      | `86400000`                                       | Block a model for 24 hours after an unsupported account service tier                            |
 | `retryDelayMs`                 | `1000`                                           | Delay before a recovery attempt                                                                 |
 | `allowUnknownQuota`            | `true`                                           | Whether models with unconfirmed quota may be tried                                              |
 | `preserveManualSelection`      | `true`                                           | Preserve eligible manually selected models inside configured routes                             |
@@ -191,19 +192,27 @@ Install a compatible `@cortexkit/opencode-antigravity-auth` CLI and set `quota.g
 
 The router reads Antigravity's global `antigravity.json` (respecting `OPENCODE_CONFIG_DIR`) and the current project's `.opencode/antigravity.json`. The project setting takes precedence. Its default `soft_quota_threshold_percent: 80` reserves the last 20% of quota, so those accounts are excluded even when they still report capacity. To use the remaining quota, set `soft_quota_threshold_percent: 100` in Antigravity's configuration and restart every OpenCode instance. This does not replenish exhausted quota. If needed, set `antigravityConfigPath` or `quota.google.softQuotaThresholdPercent` in the router config; an explicit router override must match the authentication plugin's effective setting. Changing the threshold invalidates the quota cache.
 
-Antigravity can return quota protection and account rate-limit notices as successful HTTP 200 text streams. The router recognizes exact notices from the Google provider, recovers the primary agent after it becomes idle, and returns a recovered specialist result to its parent through the native task hook. Ordinary explanations and quoted notices do not trigger recovery.
+Antigravity can return quota protection and account rate-limit notices as successful HTTP 200 text streams. For a newly delegated managed task, an exact Google quota-only response is rejected by the native task after-hook, so the host stores a task error rather than a completed specialist answer. The router recognizes exact notices from the Google provider, recovers the primary agent after it becomes idle, and returns a recovered specialist result to its parent through the native task hook. If an older completed quota-notice task cannot be recovered, it becomes an error in the parent model context; the original stored history remains available for audit. Ordinary explanations and quoted notices do not trigger recovery.
 
 The example config uses `npx --no-install`; that works only when the package is already resolvable in the OpenCode process's working directory. Prefer an absolute installed CLI path for use across projects. Antigravity CLI may refresh credentials and update its own cache. Account rotation remains the authentication plugin's responsibility. Keep its account pool free of duplicates.
 
 ## Recovery behavior
 
-The router attempts each candidate at most once per recovery chain. It handles quota exhaustion, provider authentication/access failures, unavailable models, and selected transient network/provider errors. It does not reroute safety refusals, canceled requests, rejected permissions, context overflow, or invalid tool schemas.
+The router attempts each candidate at most once per recovery chain. It handles quota exhaustion, provider authentication/access failures, unavailable models, HTTP 410, explicitly retired models, unsupported account service tiers (including the observed HTTP 400 `Unsupported service_tier: flex`), and selected transient network/provider errors. Unrelated HTTP 400 input errors remain terminal. It does not reroute safety refusals, canceled requests, rejected permissions, context overflow, or invalid tool schemas.
 
 Known exhausted quota excludes the affected candidate until a refreshed observation indicates capacity. Reset timestamps are provider-reported; reaching one requires verification, not an assumption that every request will succeed. Undated exhaustion is rechecked on cache refresh. Query failures remain unknown; the local failure cooldown can still prevent repeated model attempts.
 
+Models explicitly reported as deprecated/retired are persistently blocked until an operator clears the block; stale catalog membership does not re-enable them. Unsupported service tiers use `compatibilityCooldownMs` (24 hours by default), while ordinary failures use `failureCooldownMs`. Native catalog entries marked deprecated, retired or disabled are also excluded. If provider access is restored, clear only the relevant observed block:
+
+```sh
+node src/cli.mjs unblock --model provider/model --config /absolute/path/to/quality-router.json
+```
+
+Clearing a block does not bypass exhausted quota or a catalog deprecation flag. Availability reported by a quota adapter confirms capacity only; it does not prove that the account supports every catalog model or service tier.
+
 Recovery continues the existing session with a synthetic instruction to inspect completed actions before proceeding. It does not replay the original task or attachments. This reduces repeated work but **does not guarantee exactly-once execution of external side effects**: an upstream operation may complete before a network failure is reported. Recovered child results are injected into the parent's model context; failed task history is retained for audit.
 
-Foreground native tasks are supported. Managed background tasks are rejected because their completion and recovery semantics differ. Title generation and compaction requests are not covered. No task runs while OpenCode is closed, and interrupted work is not automatically resumed on restart. Configured candidate variants should be checked against the installed model catalog.
+Foreground native tasks are supported. Managed background tasks are rejected because their completion and recovery semantics differ. Title generation and compaction requests are not covered. No task runs while OpenCode is closed, and interrupted work is not automatically resumed on restart. Configured candidate variants should be checked against the installed model catalog. After a restart, a child whose task-specific alternative list is no longer retained cannot silently use the full catalog in value mode; its parent must make a new justified delegation.
 
 ## Privacy and cost
 
@@ -218,6 +227,7 @@ There is no spending cap. Adding a paid model to a candidate allowlist authorize
 ```sh
 node src/cli.mjs check --config /absolute/path/to/quality-router.json
 node src/cli.mjs quota --config /absolute/path/to/quality-router.json
+node src/cli.mjs unblock --model provider/model --config /absolute/path/to/quality-router.json
 ```
 
 The quota command queries status, not model generation. Its output omits credentials and email addresses. A successful quota query confirms the status contract, not model output quality.

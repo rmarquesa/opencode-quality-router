@@ -10,6 +10,7 @@ import { modelOf, classifyError } from "../../src/routing.mjs";
 import { CASES, parseAnswer } from "./cases.mjs";
 import { ReferenceBudget } from "./budget.mjs";
 import { evaluationRequest } from "./request.mjs";
+import { failureBlock } from "../../src/errors.mjs";
 const args = process.argv.slice(2);
 const arg = (name, fallback) => {
   const i = args.indexOf(name);
@@ -235,11 +236,10 @@ async function trial(row, c) {
       const failure = synthetic ? "quota" : classifyError(error);
       if (failure)
         await store.update((s) => {
-          s.blocks[row.model] = {
-            reason: failure,
-            until: Date.now() + config.failureCooldownMs,
-            observedAt: Date.now(),
-          };
+          s.blocks[row.model] = failureBlock(
+            config,
+            synthetic ? { statusCode: 429 } : error,
+          );
         });
       return persist({
         ...common,

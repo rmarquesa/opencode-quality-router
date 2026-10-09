@@ -34,3 +34,5 @@ jobs:
       - run: node test/native-integration.mjs --value-exhausted
       - run: node test/native-integration.mjs --value-free --concurrent
       - run: node test/native-integration.mjs --migration
+      - run: node test/native-integration.mjs --compatibility
+      - run: node test/native-integration.mjs --synthetic-exhausted

@@ -1,5 +1,5 @@
 import { candidateDetails } from "./decision.mjs";
-import { availability } from "./routing.mjs";
+import { availability, catalogAvailability } from "./routing.mjs";
 export const DOMAINS = [
   "frontend",
   "coding",
@@ -69,13 +69,14 @@ export function matrixRows(config, catalog, state, now = Date.now()) {
                 reason:
                   "Configured free offer no longer has confirmed zero catalog rates",
               }
-            : availability(
+            : (catalogAvailability(metadata) ??
+              availability(
                 candidate,
                 state.observations[model.split("/")[0]],
                 state.blocks[model],
                 now,
                 config.quotaTtlMs,
-              ),
+              )),
         capabilities: Object.fromEntries(
           DOMAINS.map((domain) => [
             domain,

@@ -16,12 +16,19 @@ const calls = [];
 let schemaSeen = false,
   parentReceived = false;
 const migration = process.argv.includes("--migration");
+const compatibilityScenario = process.argv.includes("--compatibility");
+const syntheticExhausted = process.argv.includes("--synthetic-exhausted");
 const valueFree = process.argv.includes("--value-free");
-const valueExhausted = process.argv.includes("--value-exhausted");
+const valueExhausted =
+  process.argv.includes("--value-exhausted") || syntheticExhausted;
 const valueScenario =
-  valueFree || valueExhausted || process.argv.includes("--value");
+  valueFree ||
+  valueExhausted ||
+  compatibilityScenario ||
+  process.argv.includes("--value");
 let economicsSeen = false;
-const syntheticScenario = process.argv.includes("--synthetic");
+const syntheticScenario =
+  process.argv.includes("--synthetic") || syntheticExhausted;
 const providerID = syntheticScenario ? "google" : "synthetic";
 const rootFailure = process.argv.includes("--root");
 const orderScenario = process.argv.includes("--order");
@@ -32,6 +39,25 @@ const llm = createServer(async (req, res) => {
   for await (const c of req) raw += c;
   const body = JSON.parse(raw || "{}");
   calls.push(body.model);
+  if (
+    (compatibilityScenario &&
+      ["child-selected", "child-backup"].includes(body.model)) ||
+    (syntheticExhausted && body.model === "child-backup")
+  ) {
+    const retired = body.model === "child-backup";
+    res.writeHead(retired ? 410 : 400, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: {
+          message: retired
+            ? "Model child-backup has been deprecated."
+            : "Unsupported service_tier: flex",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
   if (
     (body.model === "child-selected" && !valueFree) ||
     (valueExhausted && body.model === "child-backup") ||
@@ -132,7 +158,14 @@ const llm = createServer(async (req, res) => {
                     ? "Bounded UI task: selected can meet the checks at a lower reference cost than the configured default; backup is an adequate assessed alternative."
                     : "Selected for this test",
                   ...(valueScenario
-                    ? { model_order: [`${providerID}/child-backup`] }
+                    ? {
+                        model_order: [
+                          `${providerID}/child-backup`,
+                          ...(compatibilityScenario
+                            ? [`${providerID}/child-parallel`]
+                            : []),
+                        ],
+                      }
                     : {}),
                   ...(orderScenario
                     ? {
@@ -441,6 +474,21 @@ try {
       "Unassessed expensive alternative must not run",
     );
     assert.ok(!calls.includes("child-default"));
+    if (syntheticExhausted) {
+      const history = await (
+        await fetch(base + `/session/${session.id}/message`)
+      ).json();
+      const task = history
+        .flatMap((m) => m.parts)
+        .find((p) => p.type === "tool" && p.tool === "task");
+      assert.equal(
+        task.state.status,
+        "error",
+        "A quota notice must not persist as a completed task",
+      );
+      const state = JSON.parse(await readFile(routing.statePath, "utf8"));
+      assert.equal(state.blocks[`${providerID}/child-backup`].permanent, true);
+    }
   } else {
     assert.ok(schemaSeen, "Native task schema missing model");
     if (valueScenario) assert.ok(economicsSeen);
@@ -453,7 +501,11 @@ try {
       );
     else
       assert.ok(
-        calls.includes(orderScenario ? "child-parallel" : "child-backup"),
+        calls.includes(
+          orderScenario || compatibilityScenario
+            ? "child-parallel"
+            : "child-backup",
+        ),
         "Child fallback missing",
       );
     if (orderScenario)
@@ -462,6 +514,16 @@ try {
         "Task-specific quality order ignored",
       );
     assert.ok(!calls.includes("child-default"), "Blocked default was used");
+    if (compatibilityScenario) {
+      const state = JSON.parse(await readFile(routing.statePath, "utf8"));
+      assert.equal(
+        state.blocks[`${providerID}/child-selected`].reason,
+        "incompatible",
+      );
+      assert.equal(state.blocks[`${providerID}/child-backup`].permanent, true);
+      for (const model of ["child-selected", "child-backup", "child-parallel"])
+        assert.equal(calls.filter((x) => x === model).length, 1);
+    }
     const sessions = await (await fetch(base + "/session")).json();
     const childSessions = sessions.filter((s) => s.parentID === session.id);
     const histories = await Promise.all(

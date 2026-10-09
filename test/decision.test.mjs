@@ -402,3 +402,104 @@ test("a 177-model catalog stays discoverable without overflowing native output l
     /outside/,
   );
 });
+
+test("a resumed child without retained task choices cannot silently use unassessed value alternatives", async (t) => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { default: plugin } = await import("../src/index.mjs");
+  const dir = await mkdtemp(join(tmpdir(), "quality-resumed-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const configPath = join(dir, "config.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      ...config(),
+      quota: {},
+      statePath: join(dir, "state.json"),
+    }),
+  );
+  let prompts = 0;
+  const history = [
+    {
+      info: {
+        id: "user",
+        role: "user",
+        agent: "frontend",
+        sessionID: "child",
+        model: { providerID: "x", modelID: "adequate" },
+      },
+      parts: [],
+    },
+    {
+      info: {
+        id: "assistant",
+        role: "assistant",
+        parentID: "user",
+        sessionID: "child",
+        agent: "frontend",
+        providerID: "x",
+        modelID: "adequate",
+        error: {
+          name: "APIError",
+          data: { statusCode: 429, message: "Quota exhausted" },
+        },
+      },
+      parts: [],
+    },
+  ];
+  const h = await plugin(
+    {
+      directory: dir,
+      client: {
+        config: {
+          providers: async () => ({
+            data: {
+              providers: [
+                {
+                  id: "x",
+                  models: { adequate: {}, backup: {}, expensive: {} },
+                },
+              ],
+            },
+          }),
+        },
+        app: { log: async () => {} },
+        session: {
+          get: async () => ({ data: { id: "child", parentID: "parent" } }),
+          messages: async () => ({ data: history }),
+          prompt: async () => {
+            prompts++;
+            throw Error("Unexpected dispatch");
+          },
+        },
+      },
+    },
+    { configPath },
+  );
+  t.after(() => h.dispose());
+  const output = {
+    messages: [
+      { info: { role: "user", sessionID: "parent" }, parts: [] },
+      {
+        info: { role: "assistant", sessionID: "parent" },
+        parts: [
+          {
+            id: "old-task",
+            type: "tool",
+            tool: "task",
+            state: {
+              status: "error",
+              input: { subagent_type: "frontend" },
+              metadata: { sessionId: "child" },
+              error: "Subagent failed (task_id: child): quota",
+            },
+          },
+        ],
+      },
+    ],
+  };
+  await h["experimental.chat.messages.transform"]({}, output);
+  assert.equal(prompts, 0);
+  assert.equal(output.messages[1].parts[0].state.status, "error");
+});

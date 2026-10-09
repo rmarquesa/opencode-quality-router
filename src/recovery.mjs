@@ -1,3 +1,4 @@
+import { classifyError, quotaNotice, syntheticQuotaError } from "./errors.mjs";
 const keyOf = (model) => (model ? `${model.providerID}/${model.modelID}` : "");
 const modelOf = (key) => {
   const i = key.indexOf("/");
@@ -7,58 +8,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const CONTINUE =
   "[quality-router] Continue the existing task from the conversation above. The previous provider failed. Check completed actions and tool results first; do not repeat completed edits, commands, submissions or delegated tasks.";
 
-function quotaNotice(text) {
-  return /^(?:Quota protection: All \d+ account\(s\) are over \d+% usage for (?:gemini|claude)\. Quota resets in [^.]+\. Add more accounts, wait for quota reset, or set soft_quota_threshold_percent: 100 to disable\.|All \d+ account\(s\) rate-limited for (?:gemini|claude)\. Quota resets in [^.]+\. Add more accounts with `opencode auth login` or wait and retry\.)$/.test(
-    text?.trim() ?? "",
-  );
-}
-function syntheticQuotaError(message) {
-  if (
-    message?.info?.role !== "assistant" ||
-    message.info.providerID !== "google"
-  )
-    return;
-  // Only a complete, exact provider notice qualifies; quoted notices and normal
-  // answers containing an explanation must never trigger another model call.
-  if (
-    !message.parts?.every((p) =>
-      ["text", "step-start", "step-finish"].includes(p.type),
-    )
-  )
-    return;
-  const text = message.parts
-    .filter((p) => p.type === "text")
-    .map((p) => p.text)
-    .join("\n")
-    .trim();
-  if (quotaNotice(text))
-    return { name: "APIError", data: { statusCode: 429, message: text } };
-}
-
 function recoverable(error) {
-  if (!error) return false;
-  if (
-    /Aborted|AbortError|ContentFilter|ContextOverflow|Permission|Rejected|StructuredOutput/.test(
-      error.name ?? "",
-    )
-  )
-    return false;
-  const data = error.data ?? error;
-  const message = `${data.message ?? ""} ${data.responseBody ?? ""} ${error.message ?? ""}`;
-  if (
-    /content.?filter|safety policy|safety settings|blocked.*safety|context.{0,20}(length|window|limit)|maximum context|permission rejected|user.{0,10}(cancel|abort)/i.test(
-      message,
-    )
-  )
-    return false;
-  const status = Number(data.statusCode ?? error.statusCode ?? error.status);
-  if ([401, 402, 403, 404, 408, 429, 500, 502, 503, 504, 529].includes(status))
-    return true;
-  if (/ProviderAuthError|ModelNotFoundError/.test(error.name ?? ""))
-    return true;
-  return /rate[_ -]?limit|quota.{0,40}(exceed|exhaust|limit)|usage.{0,25}(exceed|exhaust|limit)|insufficient[_ ](quota|credits)|credit.{0,20}exhaust|all accounts.{0,30}limit|model.{0,30}(not found|disabled|unavailable|not supported)|no.{0,15}valid license|ECONNRESET|ETIMEDOUT|fetch failed|service unavailable/i.test(
-    message,
-  );
+  return !!classifyError(error);
 }
 
 // Only export the entry point: OpenCode loads every function export as a plugin.
@@ -393,6 +344,7 @@ export function createRecovery({
             part.state.metadata?.sessionId ??
             part.state.error?.match(/task_id:\s*(ses_[\w-]+)/)?.[1];
           if (!childID) continue;
+          const hadQuotaNotice = part.state.status === "completed";
           const token = `${parentID}:${part.id}`;
           if (!taskResults.has(token)) {
             const job = (async () => {
@@ -428,7 +380,21 @@ export function createRecovery({
             taskResults.set(token, job);
           }
           const recovered = await taskResults.get(token);
-          if (!recovered || parentState.cancelled) continue;
+          if (!recovered || parentState.cancelled) {
+            if (hadQuotaNotice)
+              part.state = {
+                status: "error",
+                input: part.state.input,
+                error: `Subagent failed (task_id: ${childID}): provider quota exhausted and recovery did not produce a valid answer. Reassess availability and task fit before a new delegation.`,
+                metadata: {
+                  ...part.state.metadata,
+                  quotaFailure: true,
+                  fallbackRecovered: false,
+                },
+                time: part.state.time,
+              };
+            continue;
+          }
           const text = recovered.parts
             .filter((p) => p.type === "text")
             .map((p) => p.text)
