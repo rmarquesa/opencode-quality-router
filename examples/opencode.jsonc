@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openai/gpt-6-astra",
+  "default_agent": "build",
+  "agent": {
+    "build": {
+      "mode": "primary",
+      "model": "openai/gpt-6-astra",
+    },
+    "frontend-specialist": {
+      "description": "Implement polished, accessible frontend interfaces and verify rendered results.",
+      "mode": "subagent",
+      "model": "openai/gpt-6.1-sol",
+      "prompt": "Inspect the current UI, preserve design patterns, implement the requested changes and verify responsiveness and accessibility.",
+    },
+  },
+}

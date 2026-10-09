@@ -1,0 +1,30 @@
+name: Test
+on: [push, pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm install --global opencode-ai@1.18.31
+      - run: opencode models > /dev/null
+      - run: npm run test:integration
+      - run: node test/native-integration.mjs --root
+      - run: node test/native-integration.mjs --permissions
+      - run: node test/native-integration.mjs --concurrent
+      - run: node test/native-integration.mjs --order

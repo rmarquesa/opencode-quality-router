@@ -1,0 +1,102 @@
+{
+  "quotaTtlMs": 60000,
+  "failureCooldownMs": 900000,
+  "retryDelayMs": 1000,
+  "allowUnknownQuota": true,
+  "preserveManualSelection": true,
+  "quota": {
+    "opencode-go": {
+      "enabled": true
+    },
+    "google": {
+      "enabled": true,
+      "command": [
+        "npx",
+        "--no-install",
+        "@cortexkit/opencode-antigravity-auth",
+        "quota",
+        "--json",
+        "--refresh"
+      ]
+    },
+    "github-copilot": {
+      "enabled": true
+    },
+    "openai": {
+      "enabled": true
+    }
+  },
+  "agents": {
+    "build": {
+      "candidates": [
+        {
+          "model": "openai/gpt-6-astra",
+          "notes": "Candidate for demanding reasoning, architecture, security and difficult debugging.",
+          "evidence": {
+            "kind": "operator-preference",
+            "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
+          },
+          "variant": "high"
+        },
+        {
+          "model": "openai/gpt-6.1-sol",
+          "notes": "Candidate for implementation, refactoring and UI engineering.",
+          "evidence": {
+            "kind": "operator-preference",
+            "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
+          },
+          "variant": "high"
+        },
+        {
+          "model": "google/antigravity-gemini-3.1-pro",
+          "notes": "Candidate for broad analysis and frontend work; inspect rendered results.",
+          "evidence": {
+            "kind": "operator-preference",
+            "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
+          },
+          "variant": "high"
+        }
+      ]
+    },
+    "frontend-specialist": {
+      "candidates": [
+        {
+          "model": "openai/gpt-6.1-sol",
+          "notes": "Candidate for implementation, refactoring and UI engineering.",
+          "evidence": {
+            "kind": "operator-preference",
+            "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
+          },
+          "variant": "high"
+        },
+        {
+          "model": "google/antigravity-claude-opus-4-6-thinking",
+          "notes": "Candidate for complex implementation and design reasoning.",
+          "evidence": {
+            "kind": "operator-preference",
+            "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
+          },
+          "variant": "high"
+        },
+        {
+          "model": "google/antigravity-gemini-3.1-pro",
+          "notes": "Candidate for broad analysis and frontend work; inspect rendered results.",
+          "evidence": {
+            "kind": "operator-preference",
+            "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
+          },
+          "variant": "high"
+        },
+        {
+          "model": "openai/gpt-6-astra",
+          "notes": "Candidate for demanding reasoning, architecture, security and difficult debugging.",
+          "evidence": {
+            "kind": "operator-preference",
+            "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
+          },
+          "variant": "high"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "opencode-quality-router",
+  "version": "0.1.0",
+  "description": "Quality-first, quota-aware model selection for native OpenCode agents and tasks",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rmarquesa/opencode-quality-router.git"
+  },
+  "homepage": "https://github.com/rmarquesa/opencode-quality-router#readme",
+  "bugs": { "url": "https://github.com/rmarquesa/opencode-quality-router/issues" },
+  "keywords": ["opencode", "plugin", "model-routing", "quota", "fallback", "agents"],
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "src",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.31 <2"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.31"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:integration": "node test/native-integration.mjs",
+    "check": "node --check src/index.mjs && node --check src/routing.mjs && node --check src/quotas.mjs && node --check src/store.mjs"
+  }
+}

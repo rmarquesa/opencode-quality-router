@@ -1,0 +1,70 @@
+{
+  "providerOrder": ["opencode-go", "google", "github-copilot", "opencode"],
+  "cooldownMs": 900000,
+  "retryDelayMs": 1000,
+  "routes": {
+    "build": [
+      "google/antigravity-gemini-3.8-flash",
+      "opencode-go/gpt-5.6-luna",
+      "github-copilot/gpt-5.6-luna",
+      "opencode/gpt-5.6-luna"
+    ],
+    "plan": [
+      "opencode-go/kimi-k2.7-code",
+      "google/antigravity-gemini-3.1-pro",
+      "github-copilot/claude-sonnet-5",
+      "opencode/claude-sonnet-5"
+    ],
+    "general": [
+      "opencode-go/gpt-5.6-luna",
+      "google/antigravity-claude-sonnet-4-6-thinking",
+      "github-copilot/gpt-5.6-luna",
+      "opencode/gpt-5.6-luna"
+    ],
+    "explore": [
+      "opencode-go/qwen3.8-flash",
+      "google/antigravity-gemini-3.8-flash",
+      "github-copilot/gpt-5.6-luna",
+      "opencode/gpt-5.6-luna"
+    ],
+    "fast": [
+      "opencode-go/qwen3.8-flash",
+      "google/antigravity-gemini-3.8-flash",
+      "github-copilot/gpt-5.6-luna",
+      "opencode/gpt-5.6-luna"
+    ],
+    "medium": [
+      "opencode-go/gpt-5.6-luna",
+      "google/antigravity-claude-sonnet-4-6-thinking",
+      "github-copilot/gpt-5.6-luna",
+      "opencode/gpt-5.6-luna"
+    ],
+    "frontend-specialist": [
+      "opencode-go/kimi-k2.7-code",
+      "google/antigravity-claude-sonnet-4-6-thinking",
+      "github-copilot/claude-sonnet-5",
+      "opencode/claude-sonnet-5"
+    ],
+    "security-specialist": [
+      "opencode-go/kimi-k2.7-code",
+      "google/antigravity-claude-sonnet-4-6-thinking",
+      "github-copilot/claude-sonnet-5",
+      "opencode/claude-sonnet-5"
+    ],
+    "devops-specialist": [
+      "opencode-go/kimi-k2.7-code",
+      "google/antigravity-claude-sonnet-4-6-thinking",
+      "github-copilot/claude-sonnet-5",
+      "opencode/claude-sonnet-5"
+    ],
+    "heavy": [
+      "opencode-go/kimi-k3",
+      "google/antigravity-claude-opus-4-6-thinking",
+      "github-copilot/claude-opus-5",
+      "opencode/claude-opus-5"
+    ]
+  },
+  "agentProviderOrder": {
+    "build": ["google", "opencode-go", "github-copilot", "opencode"]
+  }
+}
