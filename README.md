@@ -143,6 +143,10 @@ Install a compatible `@cortexkit/opencode-antigravity-auth` CLI and set `quota.g
 }
 ```
 
+The router reads Antigravity's global `antigravity.json` (respecting `OPENCODE_CONFIG_DIR`) and the current project's `.opencode/antigravity.json`. The project setting takes precedence. Its default `soft_quota_threshold_percent: 80` reserves the last 20% of quota, so those accounts are excluded even when they still report capacity. To use the remaining quota, set `soft_quota_threshold_percent: 100` in Antigravity's configuration and restart every OpenCode instance. This does not replenish exhausted quota. If needed, set `antigravityConfigPath` or `quota.google.softQuotaThresholdPercent` in the router config; an explicit router override must match the authentication plugin's effective setting. Changing the threshold invalidates the quota cache.
+
+Antigravity can return quota protection and account rate-limit notices as successful HTTP 200 text streams. The router recognizes exact notices from the Google provider, recovers the primary agent after it becomes idle, and returns a recovered specialist result to its parent through the native task hook. Ordinary explanations and quoted notices do not trigger recovery.
+
 The example config uses `npx --no-install`; that works only when the package is already resolvable in the OpenCode process's working directory. Prefer an absolute installed CLI path for use across projects. Antigravity CLI may refresh credentials and update its own cache. Account rotation remains the authentication plugin's responsibility. Keep its account pool free of duplicates.
 
 ## Recovery behavior
@@ -187,6 +191,8 @@ node test/native-integration.mjs --root
 node test/native-integration.mjs --permissions
 node test/native-integration.mjs --concurrent
 node test/native-integration.mjs --order
+node test/native-integration.mjs --synthetic
+node test/native-integration.mjs --synthetic --root
 ```
 
 Unit tests cover independent quota windows, account groups, reset interpretation, privacy, concurrent state writes, bounded fallback, cancellation, duplicate events, and recovered result delivery.

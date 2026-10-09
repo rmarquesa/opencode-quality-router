@@ -15,8 +15,11 @@ import { createRecovery } from "./recovery.mjs";
 const POLICY = `Quality Router: maximize task-specific quality, not speed or cost. Before delegating managed agents, call quota_candidates, inspect capability notes, evidence and availability, then use the native task tool with model (provider/model), model_reason and model_order (alternatives ordered by quality for this concrete task). Candidate order is an operator preference, not a proven benchmark ranking. Prefer the most capable eligible model for the concrete task. Never infer quota from catalog membership. Unknown quota is not confirmed capacity. Include scope, relevant context/files, constraints and acceptance checks in task.prompt. Do not repeat completed work after provider recovery. Report unresolved verification. The router preserves native task permissions and may change the selected model if its availability changes.`;
 
 // Only this module is loaded as an OpenCode plugin; helpers are ordinary modules.
-export default async function QualityRouter({ client }, options = {}) {
-  const config = await loadConfig(options);
+export default async function QualityRouter(
+  { client, directory },
+  options = {},
+) {
+  const config = await loadConfig({ ...options, directory });
   const store = new StateStore(config.statePath);
   const quota = new QuotaService(config, store);
   const routes = Object.fromEntries(

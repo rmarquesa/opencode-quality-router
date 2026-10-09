@@ -7,6 +7,34 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const CONTINUE =
   "[quality-router] Continue the existing task from the conversation above. The previous provider failed. Check completed actions and tool results first; do not repeat completed edits, commands, submissions or delegated tasks.";
 
+function quotaNotice(text) {
+  return /^(?:Quota protection: All \d+ account\(s\) are over \d+% usage for (?:gemini|claude)\. Quota resets in [^.]+\. Add more accounts, wait for quota reset, or set soft_quota_threshold_percent: 100 to disable\.|All \d+ account\(s\) rate-limited for (?:gemini|claude)\. Quota resets in [^.]+\. Add more accounts with `opencode auth login` or wait and retry\.)$/.test(
+    text?.trim() ?? "",
+  );
+}
+function syntheticQuotaError(message) {
+  if (
+    message?.info?.role !== "assistant" ||
+    message.info.providerID !== "google"
+  )
+    return;
+  // Only a complete, exact provider notice qualifies; quoted notices and normal
+  // answers containing an explanation must never trigger another model call.
+  if (
+    !message.parts?.every((p) =>
+      ["text", "step-start", "step-finish"].includes(p.type),
+    )
+  )
+    return;
+  const text = message.parts
+    .filter((p) => p.type === "text")
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+  if (quotaNotice(text))
+    return { name: "APIError", data: { statusCode: 429, message: text } };
+}
+
 function recoverable(error) {
   if (!error) return false;
   if (
@@ -212,7 +240,10 @@ export function createRecovery({
         if (!alive()) return;
         const result = response.data;
         const error =
-          state.attemptError ?? response.error ?? result?.info?.error;
+          state.attemptError ??
+          response.error ??
+          result?.info?.error ??
+          syntheticQuotaError(result);
         if (!error && result?.info?.role === "assistant") {
           if (
             result.parts?.some(
@@ -347,7 +378,15 @@ export function createRecovery({
           if (
             part.type !== "tool" ||
             part.tool !== "task" ||
-            part.state?.status !== "error"
+            !(
+              part.state?.status === "error" ||
+              (part.state?.status === "completed" &&
+                quotaNotice(
+                  part.state.output?.match(
+                    /<task_result>\s*([\s\S]*?)\s*<\/task_result>/,
+                  )?.[1],
+                ))
+            )
           )
             continue;
           const childID =
@@ -370,11 +409,14 @@ export function createRecovery({
               );
               const cause =
                 childState.cause ??
-                (recoverable(assistant?.info.error)
+                (recoverable(
+                  assistant?.info.error ?? syntheticQuotaError(assistant),
+                )
                   ? {
                       model: keyOf(assistant.info),
                       parentID: user.info.id,
-                      error: assistant.info.error,
+                      error:
+                        assistant.info.error ?? syntheticQuotaError(assistant),
                     }
                   : undefined);
               if (!cause || childState.cancelled || parentState.cancelled)
@@ -448,6 +490,24 @@ export function createRecovery({
       }
       const retry =
         event.type === "session.status" && p.status?.type === "retry";
+      if (
+        id &&
+        (event.type === "session.idle" ||
+          (event.type === "session.status" && p.status?.type === "idle"))
+      ) {
+        // Antigravity wraps quota failures in HTTP 200 text streams, so the host
+        // emits idle rather than session.error. Read the persisted final result.
+        void (async () => {
+          const history = await messages(id);
+          const user = history.findLast((m) => m.info.role === "user");
+          const assistant = history.findLast(
+            (m) =>
+              m.info.role === "assistant" && m.info.parentID === user?.info.id,
+          );
+          const synthetic = syntheticQuotaError(assistant);
+          if (synthetic) await failure(id, synthetic, assistant.info);
+        })().catch((e) => report(`Quality Router stopped: ${e.message}`, true));
+      }
       if (
         recoverable(error) ||
         (retry && recoverable({ message: p.status.message }))

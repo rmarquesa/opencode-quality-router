@@ -15,6 +15,8 @@ const root = await mkdtemp(join(tmpdir(), "quality-router-native-"));
 const calls = [];
 let schemaSeen = false,
   parentReceived = false;
+const syntheticScenario = process.argv.includes("--synthetic");
+const providerID = syntheticScenario ? "google" : "synthetic";
 const rootFailure = process.argv.includes("--root");
 const orderScenario = process.argv.includes("--order");
 const concurrentScenario = process.argv.includes("--concurrent");
@@ -28,20 +30,31 @@ const llm = createServer(async (req, res) => {
     body.model === "child-selected" ||
     (rootFailure && body.model === "coordinator")
   ) {
-    res.writeHead(429, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        error: {
-          message: "Quota exhausted (synthetic)",
-          type: "rate_limit_error",
-        },
-      }),
-    );
-    return;
+    if (!syntheticScenario) {
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: "Quota exhausted (synthetic)",
+            type: "rate_limit_error",
+          },
+        }),
+      );
+      return;
+    }
   }
   let delta,
     finish = "stop";
-  if (body.model === "coordinator") {
+  if (
+    syntheticScenario &&
+    (body.model === "child-selected" ||
+      (rootFailure && body.model === "coordinator"))
+  ) {
+    delta = {
+      content:
+        "Quota protection: All 2 account(s) are over 80% usage for gemini. Quota resets in 143h 8m. Add more accounts, wait for quota reset, or set soft_quota_threshold_percent: 100 to disable.",
+    };
+  } else if (body.model === "coordinator") {
     const tools = body.tools ?? [];
     const def = tools.find((t) => t.function?.name === "task");
     if (permissionScenario) {
@@ -65,13 +78,13 @@ const llm = createServer(async (req, res) => {
                 arguments: JSON.stringify({
                   description: "Synthetic quality task",
                   subagent_type: "frontend-specialist",
-                  model: "synthetic/child-selected",
+                  model: `${providerID}/child-selected`,
                   model_reason: "Selected for this test",
                   ...(orderScenario
                     ? {
                         model_order: [
-                          "synthetic/child-parallel",
-                          "synthetic/child-backup",
+                          `${providerID}/child-parallel`,
+                          `${providerID}/child-backup`,
                         ],
                       }
                     : {}),
@@ -91,7 +104,7 @@ const llm = createServer(async (req, res) => {
               arguments: JSON.stringify({
                 description: "Parallel quality task",
                 subagent_type: "frontend-specialist",
-                model: "synthetic/child-parallel",
+                model: `${providerID}/child-parallel`,
                 model_reason: "Independent selection",
                 prompt: "Return CHILD_RECOVERED.",
               }),
@@ -144,11 +157,11 @@ const models = [
   "child-parallel",
 ];
 const agent = {
-  build: { mode: "primary", model: "synthetic/coordinator" },
+  build: { mode: "primary", model: `${providerID}/coordinator` },
   "frontend-specialist": {
     mode: "subagent",
     description: "Synthetic frontend test",
-    model: "synthetic/child-default",
+    model: `${providerID}/child-default`,
     permission: { edit: "deny", bash: "deny" },
   },
 };
@@ -160,7 +173,7 @@ const routing = {
   agents: {
     build: {
       candidates: ["coordinator", "coordinator-backup"].map((m) => ({
-        model: "synthetic/" + m,
+        model: providerID + "/" + m,
       })),
     },
     "frontend-specialist": {
@@ -169,7 +182,7 @@ const routing = {
         "child-selected",
         "child-backup",
         "child-parallel",
-      ].map((m) => ({ model: "synthetic/" + m })),
+      ].map((m) => ({ model: providerID + "/" + m })),
     },
   },
 };
@@ -180,7 +193,7 @@ await writeFile(
     version: 1,
     observations: {},
     blocks: {
-      "synthetic/child-default": {
+      [`${providerID}/child-default`]: {
         until: Date.now() + 600000,
         reason: "synthetic test block",
       },
@@ -199,13 +212,13 @@ try {
 } catch {}
 const plugin = resolve("src/index.mjs");
 const config = {
-  model: "synthetic/coordinator",
-  small_model: "synthetic/coordinator-backup",
+  model: `${providerID}/coordinator`,
+  small_model: `${providerID}/coordinator-backup`,
   default_agent: "build",
   plugin: [plugin],
   agent,
   provider: {
-    synthetic: {
+    [providerID]: {
       npm: "@ai-sdk/openai-compatible",
       options: {
         apiKey: "fake",
@@ -224,7 +237,7 @@ const config = {
       ),
     },
   },
-  enabled_providers: ["synthetic"],
+  enabled_providers: [providerID],
   permission: {
     "*": "deny",
     task: permissionScenario ? "deny" : "allow",
@@ -283,7 +296,7 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       agent: "build",
-      model: { providerID: "synthetic", modelID: "coordinator" },
+      model: { providerID, modelID: "coordinator" },
       parts: [{ type: "text", text: "Run synthetic test." }],
     }),
     signal: AbortSignal.timeout(45000),
@@ -349,6 +362,7 @@ try {
   console.log(
     JSON.stringify({
       passed: true,
+      syntheticQuotaResponse: syntheticScenario,
       scenario: rootFailure
         ? "root"
         : permissionScenario

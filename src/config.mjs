@@ -7,12 +7,15 @@ export async function loadConfig(options = {}) {
     process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
     "opencode",
   );
+  const antigravityBase = process.env.OPENCODE_CONFIG_DIR ?? base;
   const path = resolve(
     options.configPath ??
       process.env.OPENCODE_QUALITY_ROUTER_CONFIG ??
       join(base, "quality-router.json"),
   );
   const config = validateConfig(JSON.parse(await readFile(path, "utf8")));
+  config.antigravityConfigPath ??= join(antigravityBase, "antigravity.json");
+  config.projectDirectory = options.directory ?? process.cwd();
   config.authPath ??= join(
     process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"),
     "opencode",

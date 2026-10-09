@@ -176,3 +176,108 @@ test("a reset reached inside the cache TTL triggers a quota query", async (t) =>
   assert.equal(calls, 1);
   assert.equal(result.windows[0].remainingPercent, 100);
 });
+
+test("Antigravity honors its 80% protection boundary and the 100% opt-out", () => {
+  const data = {
+    accounts: [
+      {
+        status: "ok",
+        groups: [21, 20, 18, 0].map((remainingPercent) => ({
+          name: "gemini",
+          remainingPercent,
+        })),
+      },
+    ],
+  };
+  const reserved = normalizeAntigravity(data);
+  assert.deepEqual(
+    reserved.map((w) => w.status),
+    ["available", "exhausted", "exhausted", "exhausted"],
+  );
+  assert.equal(reserved[2].reason, "soft_quota_protection");
+  assert.deepEqual(
+    normalizeAntigravity(data, 100).map((w) => w.status),
+    ["available", "available", "available", "exhausted"],
+  );
+});
+
+test("Antigravity project policy overrides global and changes invalidate cached quota", async (t) => {
+  const { mkdir } = await import("node:fs/promises");
+  const { antigravityThreshold } = await import("../src/quotas.mjs");
+  const dir = await mkdtemp(join(tmpdir(), "quality-policy-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const antigravityConfigPath = join(dir, "antigravity.json");
+  const config = {
+    antigravityConfigPath,
+    projectDirectory: dir,
+    quotaTtlMs: 60000,
+    quota: { google: { enabled: true, command: ["synthetic"] } },
+  };
+  await writeFile(
+    antigravityConfigPath,
+    JSON.stringify({ soft_quota_threshold_percent: 80 }),
+  );
+  let calls = 0;
+  const service = new QuotaService(
+    config,
+    new StateStore(join(dir, "state.json")),
+    {
+      runCommand: async () => {
+        calls++;
+        return {
+          stdout: JSON.stringify({
+            accounts: [
+              {
+                status: "ok",
+                groups: [{ name: "gemini", remainingPercent: 18 }],
+              },
+            ],
+          }),
+        };
+      },
+    },
+  );
+  assert.equal(
+    (await service.refresh("google")).windows[0].status,
+    "exhausted",
+  );
+  await service.refresh("google");
+  assert.equal(calls, 1);
+  await writeFile(
+    antigravityConfigPath,
+    JSON.stringify({ soft_quota_threshold_percent: 100 }),
+  );
+  assert.equal(
+    (await service.refresh("google")).windows[0].status,
+    "available",
+  );
+  assert.equal(calls, 2);
+  await mkdir(join(dir, ".opencode"));
+  await writeFile(
+    join(dir, ".opencode", "antigravity.json"),
+    JSON.stringify({ soft_quota_threshold_percent: 85 }),
+  );
+  assert.equal(await antigravityThreshold(config), 85);
+  assert.equal(
+    await antigravityThreshold({
+      ...config,
+      quota: { google: { softQuotaThresholdPercent: 100 } },
+    }),
+    100,
+  );
+});
+
+test("invalid Antigravity policy cannot fabricate capacity or leak file contents", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "quality-policy-error-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const antigravityConfigPath = join(dir, "antigravity.json");
+  await writeFile(antigravityConfigPath, "private-invalid-json");
+  const service = new QuotaService(
+    { antigravityConfigPath, quota: { google: { enabled: true } } },
+    new StateStore(join(dir, "state.json")),
+  );
+  const result = await service.refresh("google");
+  assert.deepEqual(result.windows, []);
+  assert.equal(result.error, "Cannot read Antigravity quota protection policy");
+  assert.ok(!JSON.stringify(result).includes("private-invalid-json"));
+});

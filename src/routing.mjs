@@ -122,7 +122,9 @@ export function availability(candidate, observation, block, now, ttl) {
     const reset = Math.min(...dates);
     return {
       status: "blocked",
-      reason: "All accounts exhausted for this group",
+      reason: windows.some((w) => w.reason === "soft_quota_protection")
+        ? "All accounts reached the Antigravity soft quota threshold"
+        : "All accounts exhausted for this group",
       retryAt: Number.isFinite(reset)
         ? new Date(reset).toISOString()
         : undefined,

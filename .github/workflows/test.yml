@@ -28,3 +28,5 @@ jobs:
       - run: node test/native-integration.mjs --permissions
       - run: node test/native-integration.mjs --concurrent
       - run: node test/native-integration.mjs --order
+      - run: node test/native-integration.mjs --synthetic
+      - run: node test/native-integration.mjs --synthetic --root

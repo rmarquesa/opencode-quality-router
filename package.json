@@ -1,6 +1,6 @@
 {
   "name": "opencode-quality-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Quality-first, quota-aware model selection for native OpenCode agents and tasks",
   "type": "module",
   "license": "MIT",
@@ -9,8 +9,17 @@
     "url": "git+https://github.com/rmarquesa/opencode-quality-router.git"
   },
   "homepage": "https://github.com/rmarquesa/opencode-quality-router#readme",
-  "bugs": { "url": "https://github.com/rmarquesa/opencode-quality-router/issues" },
-  "keywords": ["opencode", "plugin", "model-routing", "quota", "fallback", "agents"],
+  "bugs": {
+    "url": "https://github.com/rmarquesa/opencode-quality-router/issues"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "model-routing",
+    "quota",
+    "fallback",
+    "agents"
+  ],
   "exports": {
     ".": "./src/index.mjs"
   },

@@ -105,7 +105,13 @@ async function fixture(t, options = {}) {
             ...body.model,
             ...(error ? { error } : {}),
           },
-          parts: [{ type: "text", text: "DONE: recovered result" }],
+          parts: [
+            {
+              type: "text",
+              text:
+                options.texts?.[key(body.model)] ?? "DONE: recovered result",
+            },
+          ],
         };
         histories.get(path.id).push(result);
         if (options.onPrompt) await options.onPrompt({ h, result, path, body });
@@ -427,3 +433,77 @@ test("exhausted child remains an error, never a fabricated success", async (t) =
   assert.equal(context.messages[1].parts[0].state.status, "error");
   assert.equal(f.prompts.length, 3);
 });
+
+const notice =
+  "Quota protection: All 2 account(s) are over 80% usage for gemini. Quota resets in 143h 8m. Add more accounts, wait for quota reset, or set soft_quota_threshold_percent: 100 to disable.";
+async function syntheticFailure(f, id, text = notice) {
+  const info = await f.fail(id, undefined, false);
+  delete info.error;
+  info.providerID = "google";
+  const message = f.histories.get(id).at(-1);
+  message.parts = [{ type: "text", text }];
+  return message;
+}
+
+test("completed native task with Antigravity synthetic quota text recovers in the child session", async (t) => {
+  const f = await fixture(t);
+  f.sessions.set("child", { id: "child", parentID: "parent" });
+  await f.send("child", "medium", config.routes.medium[1]);
+  await syntheticFailure(f, "child");
+  const context = f.parentContext();
+  const part = context.messages[1].parts[0];
+  part.state.status = "completed";
+  part.state.output = `<task_result>${notice}</task_result>`;
+  await f.h["experimental.chat.messages.transform"]({}, context);
+  assert.equal(f.prompts.length, 1);
+  assert.equal(part.state.metadata.fallbackRecovered, true);
+  assert.match(part.state.output, /DONE: recovered result/);
+});
+
+test("root idle detects exact synthetic quota notices but leaves ordinary explanations alone", async (t) => {
+  const f = await fixture(t);
+  await f.send("root", "build");
+  const message = await syntheticFailure(
+    f,
+    "root",
+    `The provider said: ${notice}`,
+  );
+  config.routes.build.push(key(message.info));
+  t.after(() => config.routes.build.pop());
+  await f.h.event({
+    event: { type: "session.idle", properties: { sessionID: "root" } },
+  });
+  await tick();
+  assert.equal(f.prompts.length, 0);
+  message.parts[0].text = notice;
+  await f.h.event({
+    event: { type: "session.idle", properties: { sessionID: "root" } },
+  });
+  await until(() => f.prompts.length === 1);
+  await f.h.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "root", status: { type: "idle" } },
+    },
+  });
+  await tick();
+  assert.equal(f.prompts.length, 1);
+});
+
+for (const text of [
+  notice,
+  "All 2 account(s) rate-limited for gemini. Quota resets in 143h 8m. Add more accounts with `opencode auth login` or wait and retry.",
+]) {
+  test(`a synthetic quota failure during recovery continues the bounded chain: ${text.slice(0, 20)}`, async (t) => {
+    const f = await fixture(t, { texts: { [config.routes.build[0]]: text } });
+    await f.send("root", "build", config.routes.build[1]);
+    await f.fail("root");
+    await until(() => f.prompts.length === 2);
+    assert.deepEqual(
+      f.prompts.map((p) => key(p.body.model)),
+      [config.routes.build[0], config.routes.build[2]],
+    );
+    await tick();
+    assert.equal(f.prompts.length, 2);
+  });
+}

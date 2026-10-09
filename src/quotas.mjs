@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { join } from "node:path";
 const run = promisify(execFile);
 const iso = (value) => {
   const date =
@@ -82,7 +83,7 @@ export function normalizeOpenAI(data) {
   if (!windows.length) throw new Error("No OpenAI quota windows");
   return windows;
 }
-export function normalizeAntigravity(data) {
+export function normalizeAntigravity(data, threshold = 80) {
   if (!Array.isArray(data.accounts) || !data.accounts.length)
     throw new Error("No Antigravity accounts");
   return data.accounts.flatMap((a, i) => {
@@ -96,13 +97,47 @@ export function normalizeAntigravity(data) {
       status:
         a.status !== "ok" || pct(g.remainingPercent) === undefined
           ? "unknown"
-          : g.remainingPercent > 0
+          : g.remainingPercent > 0 &&
+              (threshold === 100 || 100 - g.remainingPercent < threshold)
             ? "available"
             : "exhausted",
       remainingPercent: pct(g.remainingPercent),
+      ...(g.remainingPercent > 0 &&
+      threshold < 100 &&
+      100 - g.remainingPercent >= threshold
+        ? {
+            reason: "soft_quota_protection",
+            softQuotaThresholdPercent: threshold,
+          }
+        : {}),
       resetAt: iso(g.resetTime),
     }));
   });
+}
+export async function antigravityThreshold(config) {
+  const explicit = config.quota?.google?.softQuotaThresholdPercent;
+  if (explicit !== undefined) {
+    if (!Number.isFinite(explicit) || explicit < 1 || explicit > 100)
+      throw new Error("Invalid Antigravity soft quota threshold");
+    return explicit;
+  }
+  let threshold = 80;
+  const paths = [
+    config.antigravityConfigPath,
+    config.projectDirectory
+      ? join(config.projectDirectory, ".opencode", "antigravity.json")
+      : undefined,
+  ].filter(Boolean);
+  for (const path of paths) {
+    try {
+      const data = JSON.parse(await readFile(path, "utf8"));
+      const n = data.soft_quota_threshold_percent;
+      if (typeof n === "number" && n >= 1 && n <= 100) threshold = n;
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  return threshold;
 }
 export class QuotaService {
   constructor(
@@ -122,6 +157,15 @@ export class QuotaService {
     const job = (async () => {
       const state = await this.store.read();
       const cached = state.observations[provider];
+      let threshold, policyError;
+      try {
+        threshold =
+          provider === "google"
+            ? await antigravityThreshold(this.config)
+            : undefined;
+      } catch {
+        policyError = true;
+      }
       const resetDue = cached?.windows?.some(
         (w) =>
           w.status === "exhausted" &&
@@ -130,12 +174,20 @@ export class QuotaService {
       );
       if (
         !force &&
+        !policyError &&
         !resetDue &&
+        (provider !== "google" ||
+          cached?.softQuotaThresholdPercent === threshold) &&
         cached &&
         this.clock() - cached.checkedAt < this.config.quotaTtlMs
       )
         return cached;
-      const result = await this.query(provider);
+      const result = policyError
+        ? {
+            windows: [],
+            error: "Cannot read Antigravity quota protection policy",
+          }
+        : await this.query(provider, threshold);
       const observation = {
         ...result,
         checkedAt: this.clock(),
@@ -151,7 +203,7 @@ export class QuotaService {
     this.pending.set(provider, job);
     return job;
   }
-  async query(provider) {
+  async query(provider, threshold) {
     const adapter = this.config.quota?.[provider];
     if (!adapter?.enabled)
       return { windows: [], error: "Quota adapter disabled or unconfigured" };
@@ -167,7 +219,10 @@ export class QuotaService {
           adapter.command.slice(1),
           { timeout: 30000, maxBuffer: 2 * 1024 * 1024, env: process.env },
         );
-        return { windows: normalizeAntigravity(JSON.parse(stdout)) };
+        return {
+          windows: normalizeAntigravity(JSON.parse(stdout), threshold ?? 80),
+          softQuotaThresholdPercent: threshold ?? 80,
+        };
       }
       if (provider === "opencode")
         return {
