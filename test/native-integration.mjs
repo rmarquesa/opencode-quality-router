@@ -15,6 +15,12 @@ const root = await mkdtemp(join(tmpdir(), "quality-router-native-"));
 const calls = [];
 let schemaSeen = false,
   parentReceived = false;
+const migration = process.argv.includes("--migration");
+const valueFree = process.argv.includes("--value-free");
+const valueExhausted = process.argv.includes("--value-exhausted");
+const valueScenario =
+  valueFree || valueExhausted || process.argv.includes("--value");
+let economicsSeen = false;
 const syntheticScenario = process.argv.includes("--synthetic");
 const providerID = syntheticScenario ? "google" : "synthetic";
 const rootFailure = process.argv.includes("--root");
@@ -27,7 +33,8 @@ const llm = createServer(async (req, res) => {
   const body = JSON.parse(raw || "{}");
   calls.push(body.model);
   if (
-    body.model === "child-selected" ||
+    (body.model === "child-selected" && !valueFree) ||
+    (valueExhausted && body.model === "child-backup") ||
     (rootFailure && body.model === "coordinator")
   ) {
     if (!syntheticScenario) {
@@ -63,7 +70,47 @@ const llm = createServer(async (req, res) => {
     } else {
       schemaSeen = !!def?.function?.parameters?.properties?.model;
       const results = body.messages?.filter((m) => m.role === "tool") ?? [];
-      if (results.some((m) => JSON.stringify(m).includes("CHILD_RECOVERED"))) {
+      if (valueScenario && results.length) {
+        const comparison = JSON.parse(results[0].content);
+        assert.equal(comparison.objective, "value");
+        assert.ok(
+          comparison.candidates.every((c) => !("rank" in c)),
+          "Value context must not imply a fixed quality ranking",
+        );
+        assert.deepEqual(
+          comparison.candidates.map((c) => c.model),
+          comparison.candidates
+            .map((c) => c.model)
+            .sort((a, b) => a.localeCompare(b)),
+        );
+        const selected = comparison.candidates.find((c) =>
+          c.model.endsWith("/child-selected"),
+        );
+        const expensive = comparison.candidates.find((c) =>
+          c.model.endsWith("/child-parallel"),
+        );
+        assert.equal(
+          selected.economics.billing,
+          valueFree ? "free" : "metered",
+        );
+        assert.ok(
+          selected.economics.apiReferencePrice.output <
+            expensive.economics.apiReferencePrice.output,
+        );
+        assert.equal(
+          selected.economics.apiReferencePrice.actualChargeConfirmed,
+          false,
+        );
+        economicsSeen = true;
+      }
+      if (
+        valueExhausted &&
+        results.some((m) => m.tool_call_id === "call_task")
+      ) {
+        delta = { content: "VALUE_EXHAUSTED" };
+      } else if (
+        results.some((m) => JSON.stringify(m).includes("CHILD_RECOVERED"))
+      ) {
         parentReceived = true;
         delta = { content: "PARENT_RECEIVED_RESULT" };
       } else if (results.length) {
@@ -78,8 +125,15 @@ const llm = createServer(async (req, res) => {
                 arguments: JSON.stringify({
                   description: "Synthetic quality task",
                   subagent_type: "frontend-specialist",
+                  task_domain: "frontend",
+                  task_complexity: "simple",
                   model: `${providerID}/child-selected`,
-                  model_reason: "Selected for this test",
+                  model_reason: valueScenario
+                    ? "Bounded UI task: selected can meet the checks at a lower reference cost than the configured default; backup is an adequate assessed alternative."
+                    : "Selected for this test",
+                  ...(valueScenario
+                    ? { model_order: [`${providerID}/child-backup`] }
+                    : {}),
                   ...(orderScenario
                     ? {
                         model_order: [
@@ -104,8 +158,13 @@ const llm = createServer(async (req, res) => {
               arguments: JSON.stringify({
                 description: "Parallel quality task",
                 subagent_type: "frontend-specialist",
+                task_domain: "frontend",
+                task_complexity: "complex",
                 model: `${providerID}/child-parallel`,
-                model_reason: "Independent selection",
+                model_reason: valueScenario
+                  ? "This independent task has complex cross-component requirements; select this model for task fit, with cost considered after expected quality."
+                  : "Independent selection",
+                ...(valueScenario ? { model_order: [] } : {}),
                 prompt: "Return CHILD_RECOVERED.",
               }),
             },
@@ -120,11 +179,31 @@ const llm = createServer(async (req, res) => {
               type: "function",
               function: {
                 name: "quota_candidates",
-                arguments: JSON.stringify({ agent: "frontend-specialist" }),
+                arguments: JSON.stringify({
+                  agent: "frontend-specialist",
+                  task: "Implement bounded UI change and verify acceptance checks",
+                  task_domain: "frontend",
+                  task_complexity: "simple",
+                }),
               },
             },
           ],
         };
+        if (valueScenario && concurrentScenario)
+          delta.tool_calls.push({
+            index: 1,
+            id: "call_quota_complex",
+            type: "function",
+            function: {
+              name: "quota_candidates",
+              arguments: JSON.stringify({
+                agent: "frontend-specialist",
+                task: "Complex cross-component task with verification",
+                task_domain: "frontend",
+                task_complexity: "complex",
+              }),
+            },
+          });
         finish = "tool_calls";
       }
     }
@@ -166,6 +245,11 @@ const agent = {
   },
 };
 const routing = {
+  objective: valueScenario ? "value" : "quality",
+  preserveManualSelection: !migration,
+  providerEconomics: {
+    [providerID]: { billing: "metered", source: "synthetic contract" },
+  },
   retryDelayMs: 10,
   quotaTtlMs: 60000,
   statePath: join(root, "quota.json"),
@@ -182,7 +266,17 @@ const routing = {
         "child-selected",
         "child-backup",
         "child-parallel",
-      ].map((m) => ({ model: providerID + "/" + m })),
+      ].map((m) => ({
+        model: providerID + "/" + m,
+        ...(valueFree && m === "child-selected"
+          ? {
+              economics: {
+                billing: "free",
+                source: "verified synthetic free offer",
+              },
+            }
+          : {}),
+      })),
     },
   },
 };
@@ -231,7 +325,10 @@ const config = {
             name: m,
             limit: { context: 128000, output: 4096 },
             tool_call: true,
-            cost: { input: 0, output: 0 },
+            cost: {
+              input: m === "child-selected" ? (valueFree ? 0 : 1) : 50,
+              output: m === "child-selected" ? (valueFree ? 0 : 2) : 100,
+            },
           },
         ]),
       ),
@@ -269,9 +366,15 @@ const env = {
 delete env.OPENCODE_CONFIG_CONTENT;
 delete env.OPENCODE_SERVER_PASSWORD;
 delete env.OPENCODE_SERVER_USERNAME;
+const portProbe = createServer();
+await new Promise((r, j) =>
+  portProbe.once("error", j).listen(0, "127.0.0.1", r),
+);
+const hostPort = portProbe.address().port;
+await new Promise((r) => portProbe.close(r));
 const host = spawn(
   process.env.OPENCODE_BIN ?? "opencode",
-  ["serve", "--hostname", "127.0.0.1", "--port", "0"],
+  ["serve", "--hostname", "127.0.0.1", "--port", String(hostPort)],
   { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] },
 );
 let output = "";
@@ -296,13 +399,22 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       agent: "build",
-      model: { providerID, modelID: "coordinator" },
+      model: {
+        providerID,
+        modelID: migration ? "coordinator-backup" : "coordinator",
+      },
       parts: [{ type: "text", text: "Run synthetic test." }],
     }),
     signal: AbortSignal.timeout(45000),
   });
   const result = await response.json();
   assert.ok(response.ok, JSON.stringify(result));
+  if (migration)
+    assert.equal(
+      calls[0],
+      "coordinator",
+      "Old session model must yield to the new configured workhorse",
+    );
   if (rootFailure) {
     let done = false;
     const deadline = Date.now() + 15000;
@@ -319,14 +431,31 @@ try {
     assert.ok(done, "Root did not recover");
   } else if (permissionScenario)
     assert.ok(JSON.stringify(result).includes("PERMISSION_PRESERVED"));
-  else {
+  else if (valueExhausted) {
+    assert.ok(JSON.stringify(result).includes("VALUE_EXHAUSTED"));
+    assert.ok(economicsSeen);
+    assert.equal(calls.filter((m) => m === "child-selected").length, 1);
+    assert.equal(calls.filter((m) => m === "child-backup").length, 1);
+    assert.ok(
+      !calls.includes("child-parallel"),
+      "Unassessed expensive alternative must not run",
+    );
+    assert.ok(!calls.includes("child-default"));
+  } else {
     assert.ok(schemaSeen, "Native task schema missing model");
+    if (valueScenario) assert.ok(economicsSeen);
     assert.ok(parentReceived, "Parent did not receive recovered child");
     assert.ok(calls.includes("child-selected"), "Explicit model ignored");
-    assert.ok(
-      calls.includes(orderScenario ? "child-parallel" : "child-backup"),
-      "Child fallback missing",
-    );
+    if (valueFree)
+      assert.ok(
+        !calls.includes("child-backup"),
+        "Healthy free selection must not be replaced with a paid backup",
+      );
+    else
+      assert.ok(
+        calls.includes(orderScenario ? "child-parallel" : "child-backup"),
+        "Child fallback missing",
+      );
     if (orderScenario)
       assert.ok(
         !calls.includes("child-backup"),
@@ -334,15 +463,28 @@ try {
       );
     assert.ok(!calls.includes("child-default"), "Blocked default was used");
     const sessions = await (await fetch(base + "/session")).json();
-    const child = sessions.find((s) => s.parentID === session.id);
+    const childSessions = sessions.filter((s) => s.parentID === session.id);
+    const histories = await Promise.all(
+      childSessions.map(async (child) => ({
+        child,
+        history: await (
+          await fetch(base + `/session/${child.id}/message`)
+        ).json(),
+      })),
+    );
+    const selectedHistory = histories.find((x) =>
+      x.history.some(
+        (m) =>
+          m.info.role === "assistant" && m.info.modelID === "child-selected",
+      ),
+    );
+    const child = selectedHistory?.child;
     assert.ok(child);
     if (concurrentScenario) {
       assert.equal(sessions.filter((s) => s.parentID === session.id).length, 2);
       assert.ok(calls.includes("child-parallel"));
     }
-    const history = await (
-      await fetch(base + `/session/${child.id}/message`)
-    ).json();
+    const history = selectedHistory.history;
     assert.ok(
       history.some(
         (m) =>
@@ -363,6 +505,10 @@ try {
     JSON.stringify({
       passed: true,
       syntheticQuotaResponse: syntheticScenario,
+      valueScenario,
+      valueExhausted,
+      valueFree,
+      economicsSeen,
       scenario: rootFailure
         ? "root"
         : permissionScenario

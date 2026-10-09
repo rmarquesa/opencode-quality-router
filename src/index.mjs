@@ -11,8 +11,18 @@ import {
   classifyError,
 } from "./routing.mjs";
 import { createRecovery } from "./recovery.mjs";
-
-const POLICY = `Quality Router: maximize task-specific quality, not speed or cost. Before delegating managed agents, call quota_candidates, inspect capability notes, evidence and availability, then use the native task tool with model (provider/model), model_reason and model_order (alternatives ordered by quality for this concrete task). Candidate order is an operator preference, not a proven benchmark ranking. Prefer the most capable eligible model for the concrete task. Never infer quota from catalog membership. Unknown quota is not confirmed capacity. Include scope, relevant context/files, constraints and acceptance checks in task.prompt. Do not repeat completed work after provider recovery. Report unresolved verification. The router preserves native task permissions and may change the selected model if its availability changes.`;
+import {
+  selectionPolicy,
+  candidateDetails,
+  taskDecision,
+  compactCandidate,
+} from "./decision.mjs";
+import {
+  DOMAINS,
+  COMPLEXITIES,
+  validateAssessment,
+  capabilityEvidence,
+} from "./matrix.mjs";
 
 // Only this module is loaded as an OpenCode plugin; helpers are ordinary modules.
 export default async function QualityRouter(
@@ -30,7 +40,8 @@ export default async function QualityRouter(
   );
   const tickets = new Map(),
     calls = new Map(),
-    selections = new Map();
+    selections = new Map(),
+    consultations = new Map();
   let catalogue,
     catalogAt = 0;
   async function catalog() {
@@ -38,15 +49,15 @@ export default async function QualityRouter(
     const result = await client.config.providers();
     if (result.error || !Array.isArray(result.data?.providers))
       throw new Error("Cannot verify model catalog");
-    catalogue = new Set(
+    catalogue = new Map(
       result.data.providers.flatMap((p) =>
-        Object.keys(p.models).map((m) => `${p.id}/${m}`),
+        Object.entries(p.models).map(([id, model]) => [`${p.id}/${id}`, model]),
       ),
     );
     catalogAt = Date.now();
     return catalogue;
   }
-  async function list(agent, force = false) {
+  async function list(agent, force = false, domain, complexity) {
     const profile = config.agents[agent];
     if (!profile) throw new Error(`Unmanaged agent: ${agent}`);
     const providers = profile.candidates.map((c) => c.model.split("/")[0]);
@@ -54,10 +65,40 @@ export default async function QualityRouter(
       catalog(),
       quota.refreshAll(providers, force),
     ]);
-    return candidatesFor(config, agent, models, state);
+    return candidatesFor(config, agent, models, state).map((c) => {
+      const details = candidateDetails(config, c, models.get(c.model));
+      const expectedFree =
+        (c.economics ?? config.providerEconomics?.[c.model.split("/")[0]])
+          ?.billing === "free";
+      return {
+        ...c,
+        ...details,
+        ...(domain && complexity
+          ? {
+              assessment: capabilityEvidence(
+                state,
+                c.model,
+                domain,
+                complexity,
+              ),
+            }
+          : {}),
+        ...(expectedFree && details.economics.billing !== "free"
+          ? {
+              availability: {
+                status: "blocked",
+                reason:
+                  "Configured free offer no longer has confirmed zero catalog rates",
+              },
+            }
+          : {}),
+      };
+    });
   }
   async function pick(agent, requested, attempted = new Set(), order) {
-    const available = await list(agent);
+    let available = await list(agent);
+    if (config.objective === "value" && order)
+      available = available.filter((c) => order.includes(c.model));
     if (order)
       available.sort((a, b) => {
         const score = (c) =>
@@ -141,6 +182,11 @@ export default async function QualityRouter(
       if (t.expires < now) tickets.delete(token);
     for (const [key, token] of calls)
       if (!tickets.has(token)) calls.delete(key);
+    for (const [key, entries] of consultations) {
+      const current = entries.filter((expires) => expires >= now);
+      if (current.length) consultations.set(key, current);
+      else consultations.delete(key);
+    }
   }
   return {
     config: async (oc) => {
@@ -148,23 +194,131 @@ export default async function QualityRouter(
       for (const agent of Object.keys(config.agents)) {
         const a = oc.agent?.[agent];
         if (a && a.mode !== "subagent")
-          a.prompt = (a.prompt ?? "") + "\n\n" + POLICY;
+          a.prompt = (a.prompt ?? "") + "\n\n" + selectionPolicy(config);
       }
     },
     tool: {
       quota_candidates: tool({
         description:
-          "Get quality-oriented model candidates and live/cached quota status for a managed agent. Select the best model for the task, then call native task with model and model_reason. Does not generate model requests.",
+          "Compare managed-agent model candidates: availability, evidence, capabilities, API reference prices and account billing/quota economics. Assess quality and cost for the concrete task, then choose a model and alternative order. Does not generate model requests.",
         args: {
           agent: tool.schema.string(),
           refresh: tool.schema.boolean().optional(),
+          task: tool.schema
+            .string()
+            .optional()
+            .describe(
+              "Task scope, complexity, risks and acceptance checks for your quality/cost comparison.",
+            ),
+          task_domain: tool.schema.enum(DOMAINS).optional(),
+          task_complexity: tool.schema.enum(COMPLEXITIES).optional(),
+          models: tool.schema
+            .array(tool.schema.string())
+            .min(1)
+            .max(20)
+            .optional()
+            .describe(
+              "Inspect up to 20 model IDs from candidate_index for this task.",
+            ),
+          offset: tool.schema.number().int().min(0).optional(),
+          include_blocked: tool.schema.boolean().optional(),
+          details: tool.schema
+            .boolean()
+            .optional()
+            .describe(
+              "Return full notes, prices and quota windows instead of compact comparison rows.",
+            ),
         },
-        execute: async ({ agent, refresh }) =>
-          JSON.stringify({
+        execute: async (
+          {
             agent,
-            objective: "task-specific quality",
-            candidates: await list(agent, refresh),
-          }),
+            refresh,
+            task,
+            task_domain,
+            task_complexity,
+            details,
+            models: requestedModels,
+            offset = 0,
+            include_blocked,
+          },
+          context,
+        ) => {
+          if (
+            config.objective === "value" &&
+            (typeof task !== "string" || !task.trim())
+          )
+            throw new Error(
+              "Value routing requires a concrete task summary in quota_candidates so the comparison is specific to this delegation.",
+            );
+          if (config.objective === "value")
+            validateAssessment(task_domain, task_complexity);
+          let candidates = await list(
+            agent,
+            refresh,
+            task_domain,
+            task_complexity,
+          );
+          if (config.objective === "value")
+            candidates = candidates
+              .map(({ rank, ...c }) => c)
+              .sort((a, b) => a.model.localeCompare(b.model));
+          const allCandidates = candidates;
+          const eligible = allCandidates.filter(
+            (c) => c.availability.status !== "blocked",
+          );
+          if (
+            requestedModels?.some(
+              (model) => !allCandidates.some((c) => c.model === model),
+            )
+          )
+            throw new Error(
+              "Requested inspection model is outside the current candidate catalog",
+            );
+          const inspected = requestedModels
+            ? allCandidates.filter((c) => requestedModels.includes(c.model))
+            : include_blocked
+              ? allCandidates
+              : eligible;
+          if (config.objective === "value")
+            candidates = inspected.slice(
+              offset,
+              offset + (requestedModels ? 20 : 12),
+            );
+          expireTickets();
+          if (context?.sessionID) {
+            const key = `${context.sessionID}:${agent}:${task_domain}:${task_complexity}`;
+            const entries = consultations.get(key) ?? [];
+            entries.push(Date.now() + 300000);
+            consultations.set(key, entries);
+          }
+          return JSON.stringify({
+            agent,
+            objective: config.objective,
+            task,
+            task_domain,
+            task_complexity,
+            ...(config.objective === "value"
+              ? {
+                  totalCandidates: allCandidates.length,
+                  blockedCount: allCandidates.length - eligible.length,
+                  candidate_index: eligible.map((c) => ({
+                    model: c.model,
+                    billing: c.economics.billing,
+                  })),
+                  next_offset:
+                    offset + candidates.length < inspected.length
+                      ? offset + candidates.length
+                      : null,
+                }
+              : {}),
+            guidance:
+              "Judge task suitability and expected quality first, then compare costs. candidate_index lists every eligible model without a value rank; default details are paged to avoid native output truncation. Use models to inspect indexed candidates appropriate to this task, or offset for the next page; include_blocked to inspect quota failures. Unmeasured is unknown; smoke trials are not domain-wide benchmarks. Different tasks on the same agent can use different models. API prices are USD per million tokens, not confirmed account charges; included quota consumption may be unknown. Pass this domain/complexity and a justified choice/alternative order to task.",
+            candidates:
+              config.objective === "value" && !details
+                ? candidates.map(compactCandidate)
+                : candidates,
+          });
+        },
       }),
     },
     "tool.definition": async (input, output) => {
@@ -186,13 +340,25 @@ export default async function QualityRouter(
           model_reason: {
             type: "string",
             description:
-              "Why this model offers the best quality for this concrete task.",
+              "Task requirements, expected quality, cost/quota tradeoff and why this model is preferable to a relevant alternative.",
           },
           model_order: {
             type: "array",
             items: { type: "string" },
             description:
-              "Optional allowed alternatives ordered by quality for this specific task.",
+              "Allowed alternatives ordered for this concrete task under the routing objective. Required in value mode; [] excludes all alternatives.",
+          },
+          task_domain: {
+            type: "string",
+            enum: DOMAINS,
+            description:
+              "Domain of this concrete task, matching quota_candidates.",
+          },
+          task_complexity: {
+            type: "string",
+            enum: COMPLEXITIES,
+            description:
+              "Complexity of this task, independent of the specialist's name; match quota_candidates.",
           },
         },
       };
@@ -205,16 +371,18 @@ export default async function QualityRouter(
       if (output.args.background)
         throw new Error("Quality Router supports foreground native tasks only");
       const agent = output.args.subagent_type;
-      if (output.args.model && !routes[agent].includes(output.args.model))
-        throw new Error(`Model is outside candidate allowlist for ${agent}`);
-      const order = output.args.model_order;
-      if (
-        order &&
-        (!Array.isArray(order) ||
-          new Set(order).size !== order.length ||
-          order.some((m) => !routes[agent].includes(m)))
-      )
-        throw new Error("Invalid task-specific model order");
+      const order = taskDecision(config, agent, output.args);
+      if (config.objective === "value")
+        validateAssessment(
+          output.args.task_domain,
+          output.args.task_complexity,
+        );
+      expireTickets();
+      const consultationKey = `${input.sessionID}:${agent}:${output.args.task_domain}:${output.args.task_complexity}`;
+      if (config.objective === "value" && !consultations.has(consultationKey))
+        throw new Error(
+          "Consult quota_candidates for this agent in the current session before choosing a model. The comparison expires after five minutes.",
+        );
       const selected = await pick(agent, output.args.model, new Set(), order);
       if (!selected)
         throw new Error(
@@ -230,10 +398,19 @@ export default async function QualityRouter(
         variant: selected.variant,
         order,
         reason: output.args.model_reason ?? "Configured quality preference",
+        assessment: {
+          domain: output.args.task_domain,
+          complexity: output.args.task_complexity,
+        },
         expires: Date.now() + 300000,
       };
       tickets.set(token, ticket);
       calls.set(`${input.sessionID}:${input.callID}`, token);
+      if (config.objective === "value") {
+        const entries = consultations.get(consultationKey);
+        entries.shift();
+        if (!entries.length) consultations.delete(consultationKey);
+      }
       output.args.prompt = `[quality-router-ticket:${token}]\n${output.args.prompt}`;
       await report(`${agent}: selected ${selected.model}`);
     },
@@ -271,6 +448,7 @@ export default async function QualityRouter(
           model: ticket.model,
           order: ticket.order,
           reason: ticket.reason,
+          assessment: ticket.assessment,
         });
       await recovery["chat.message"](input, output);
       if (ticket) {
@@ -280,6 +458,7 @@ export default async function QualityRouter(
           model: actual,
           order: ticket.order,
           reason: ticket.reason,
+          assessment: ticket.assessment,
         });
       }
     },
@@ -302,6 +481,8 @@ export default async function QualityRouter(
           selectedModel: selected.model,
           actualModel: actual,
           reason: selected.reason,
+          objective: config.objective,
+          assessment: selected.assessment,
         },
       };
     },
@@ -309,13 +490,18 @@ export default async function QualityRouter(
       recovery["experimental.chat.messages.transform"],
     event: async (input) => {
       await recovery.event(input);
-      if (input.event.type === "session.deleted")
-        selections.delete(input.event.properties?.info?.id);
+      if (input.event.type === "session.deleted") {
+        const id = input.event.properties?.info?.id;
+        selections.delete(id);
+        for (const key of consultations.keys())
+          if (key.startsWith(`${id}:`)) consultations.delete(key);
+      }
     },
     dispose: async () => {
       tickets.clear();
       calls.clear();
       selections.clear();
+      consultations.clear();
       await recovery.dispose();
     },
   };

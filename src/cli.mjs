@@ -2,12 +2,17 @@
 import { loadConfig } from "./config.mjs";
 import { StateStore } from "./store.mjs";
 import { QuotaService } from "./quotas.mjs";
+import { readFile } from "node:fs/promises";
+import { matrixRows } from "./matrix.mjs";
 const args = process.argv.slice(2);
 const command = args.shift();
 const index = args.indexOf("--config");
-if (!["check", "quota"].includes(command) || (index >= 0 && !args[index + 1])) {
+if (
+  !["check", "quota", "matrix"].includes(command) ||
+  (index >= 0 && !args[index + 1])
+) {
   console.error(
-    "Usage: node src/cli.mjs <check|quota> [--config /path/to/quality-router.json]",
+    "Usage: node src/cli.mjs <check|quota|matrix> [--config /path/to/quality-router.json] [--catalog /path/to/catalog.json]",
   );
   process.exitCode = 2;
 } else
@@ -19,7 +24,28 @@ if (!["check", "quota"].includes(command) || (index >= 0 && !args[index + 1])) {
       console.log(
         JSON.stringify({ valid: true, agents: Object.keys(config.agents) }),
       );
-    else {
+    else if (command === "matrix") {
+      const catalogIndex = args.indexOf("--catalog");
+      if (catalogIndex < 0 || !args[catalogIndex + 1])
+        throw new Error("Catalog required");
+      const catalog = new Map(
+        Object.entries(
+          JSON.parse(await readFile(args[catalogIndex + 1], "utf8")),
+        ),
+      );
+      const state = await new StateStore(config.statePath).read();
+      console.log(
+        JSON.stringify(
+          {
+            version: 1,
+            generatedAt: new Date().toISOString(),
+            rows: matrixRows(config, catalog, state),
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
       const store = new StateStore(config.statePath);
       const service = new QuotaService(config, store);
       const providers = Object.values(config.agents).flatMap((p) =>

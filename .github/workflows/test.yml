@@ -30,3 +30,7 @@ jobs:
       - run: node test/native-integration.mjs --order
       - run: node test/native-integration.mjs --synthetic
       - run: node test/native-integration.mjs --synthetic --root
+      - run: node test/native-integration.mjs --value
+      - run: node test/native-integration.mjs --value-exhausted
+      - run: node test/native-integration.mjs --value-free --concurrent
+      - run: node test/native-integration.mjs --migration

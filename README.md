@@ -1,6 +1,6 @@
 # OpenCode Quality Router
 
-Quality-first model selection and quota-aware fallback for native OpenCode agents.
+Task-specific model selection with quality or quality/cost objectives and quota-aware fallback for native OpenCode agents.
 
 Your primary agent chooses the model for each delegated task. The plugin checks that choice against the model catalog, your candidate allowlist, and current quota observations. If a provider fails, it continues the existing specialist session with the next eligible alternative.
 
@@ -9,7 +9,7 @@ Your primary agent chooses the model for each delegated task. The plugin checks 
 ## What it does
 
 - Adds `quota_candidates` to inspect candidates, capability notes, quota, and reset times.
-- Extends the native `task` tool with `model`, `model_reason`, and `model_order`.
+- Extends the native `task` tool with `task_domain`, `task_complexity`, `model`, `model_reason`, and `model_order`.
 - Keeps native agent prompts, task permissions, child sessions, and foreground cancellation behavior.
 - Supports concurrent tasks with independent model choices, including tasks targeting the same specialist.
 - Persists normalized quota observations and model failure cooldowns across restarts.
@@ -17,15 +17,56 @@ Your primary agent chooses the model for each delegated task. The plugin checks 
 - Recovers primary agents without requiring an unavailable model to make a routing decision.
 - Reports selected and actual models through logs, notifications, and task metadata.
 
-## Quality policy
+## Selection policy
 
-Quality is the objective. Cost, latency, and remaining quota percentage do not rank the models.
+Set `objective` to `"value"` for task-specific quality/cost decisions or `"quality"` to maximize quality regardless of cost. Existing configs default to `"quality"`; the example config uses `"value"`.
 
-Each specialist has an allowlist of candidate models. Capability notes and evidence help the primary agent choose the best fit for a concrete task. The primary can also supply a task-specific alternative order through `model_order`.
+In value mode, the primary agent analyzes the task's complexity, risks, capabilities, context and acceptance checks. It compares models capable of doing that task using capability notes, evidence, catalog capabilities and account economics. It should choose a less costly adequate model when a more costly option offers no meaningful expected quality gain, and justify extra cost for tasks where it does. This is a coordinator decision, not a fixed formula dividing an invented quality score by a price.
 
-The example ordering is an initial operator preference, **not a measured benchmark or a guarantee that one model is universally best**. Add your own task evaluations and update the notes as models change. The coordinator's judgment and the quality of these profiles determine the quality of selection. The plugin does not grade generated code or automatically escalate after a poor answer.
+`quota_candidates` supplies model input/output/cache reference rates, context pricing tiers, context limits, reasoning/tool/image capabilities, account billing mode and available quota. In value mode `candidate_index` lists every eligible model and billing mode alphabetically without a recommendation rank. Detail rows default to 12 per page, avoiding native tool-output truncation for large catalogs. Inspect relevant entries with `models: ["provider/model", ...]` (up to 20), or follow `next_offset` using `offset`; `include_blocked: true` includes blocked rows in page inspection. `details: true` returns full notes and quota windows for the inspected page. The primary must consult the tool with a concrete `task` summary, `task_domain` and `task_complexity` in the current parent session (consultation expires after five minutes), then provide the matching `task_domain`/`task_complexity`, `model`, a nonempty `model_reason` comparing quality/cost, and `model_order` with the acceptable alternatives. Delegations missing that decision are rejected for the primary to reassess. Recovery stays inside the selected model and the assessed alternatives, preserving the primary's order. Use `[]` when there are no acceptable alternatives; the plugin stops rather than silently switching to an unassessed expensive model.
 
-Quota is a separate eligibility check. A catalog entry does not prove available quota or account access. A percentage of available quota does not prove that every model in a group is usable.
+Configure `providerEconomics` for your actual account. Candidate `economics` overrides a provider entry. Billing may be `free`, `included`, `metered`, or `unknown`. Use `free` only for a provider offer you have verified. A configured free candidate is blocked if its current catalog rates are missing or no longer zero, preventing a promotion ending from silently enabling a paid route. Zero rates alone never imply a free offer. Included subscription quota is a resource, not an API token charge. Zero catalog prices do not prove free or unlimited use. Missing costs and model-specific quota consumption remain unknown. `quotaUnitsPerRequest` is optional and should be set only from verified provider/account evidence; the plugin never guesses a multiplier from a model name or API price.
+
+For example, configure a verified subscription account as follows:
+
+```json
+{
+  "objective": "value",
+  "providerEconomics": {
+    "openai": {
+      "billing": "included",
+      "source": "Your verified ChatGPT OAuth subscription",
+      "notes": "Included plan capacity; model-specific quota consumption is unknown."
+    }
+  }
+}
+```
+
+Each successful candidate consultation authorizes one managed delegation in value mode. Multiple concurrent tasks, including tasks of the same domain/complexity on the same agent, each need their own consultation; a consultation cannot be reused for unrelated work. In quality mode, cost and latency do not rank models. Missing task choices still use configured candidate order, and alternatives omitted from `model_order` remain available afterward.
+
+Capability notes and configured ordering are operator preferences or hypotheses, **not measured benchmarks or a guarantee that one model is universally best**. The quality of selection depends on the coordinator's judgment and available evidence. The plugin validates explicit decisions; it does not validate the truth of a rationale, grade generated code, or automatically escalate after a poor answer. The primary is instructed to verify results and reassess task fit if acceptance checks fail. Initial primary-agent selection remains configured by OpenCode. Use a suitable workhorse model for the primary instead of making every role default to a flagship. With `preserveManualSelection: false`, an old session carrying a managed model switches to the first eligible configured candidate at its next user turn after the plugin is reloaded; running generations are not interrupted. Delegated tasks still honor their explicit choices independently.
+
+Quota is an eligibility check. Catalog membership does not prove available capacity or access, and remaining quota percentage is not a quality/efficiency score. Reference prices come from OpenCode's model catalog and may be stale or account-specific placeholders; they are never confirmed actual charges. Verify billing terms before using them as financial estimates.
+
+## Capability matrix
+
+The matrix has one row per configured provider/model and separate cells for frontend, coding, debugging, security, devops and analysis, each at simple/complex task complexity. Cells start unmeasured. Actual evaluation records can populate only the matching cell; a provider failure is unavailable, not a failed quality score. Results do not transfer across providers, domains or complexity. Tested reasoning variants are reported; a result at a low variant does not prove performance at every other setting. The coordinator receives the relevant cell in `quota_candidates` and uses it as limited evidence rather than an automatic universal ranking.
+
+Native smoke evaluation instructions, independent verifiers and an agent-reviewed draft spec are under `evals/model-routing`. The runner uses configured OpenCode authentication, fresh sessions, an empty working directory, denied tools and no model judge. It evaluates response-level reasoning; it does not establish frontend/code/security competence. It keeps every catalog row, including rows skipped for quota, access, unknown rates or the reference-price budget. Actual output-budget/timeouts remain invalid trials. Local transcripts and reports must remain private.
+
+```sh
+node evals/model-routing/run.mjs \
+  --catalog /private/path/to/opencode-model-catalog.json \
+  --config /private/path/to/quality-router.json \
+  --report-dir /private/path/to/evidence \
+  --max-reference-usd 0
+```
+
+The catalog argument is a JSON object mapping `provider/model` to native OpenCode model metadata. Metered attempts default to a zero budget. A positive budget reserves conservative catalog-reference input/output costs before each request and settles completed reservations using native reported cost; unknown completion costs retain their reservation. This is not a confirmed invoice or a provider-enforced spending cap. Native reported usage/cost is retained separately. Classified provider failures also enter the normal model cooldown. The CLI matrix export can be used without generating model responses:
+
+```sh
+node src/cli.mjs matrix --catalog /private/path/to/opencode-model-catalog.json --config /private/path/to/quality-router.json
+```
 
 ## Installation
 
@@ -59,9 +100,9 @@ Provider credentials must already be configured in OpenCode. This plugin neither
 
 Ask your primary agent to perform a task normally. The plugin adds routing instructions to managed primary agents. The coordinator should:
 
-1. Call `quota_candidates` for the specialist.
-2. Read capability notes and availability.
-3. Call native `task` with its selected model and quality rationale.
+1. Classify this task and call `quota_candidates` with the specialist, task summary, `task_domain` and `task_complexity`.
+2. Assess the task, then compare capability evidence, availability and economics.
+3. Call native `task` with its selected model, quality/cost rationale and acceptable alternative order.
 
 Example model-generated task arguments:
 
@@ -69,8 +110,10 @@ Example model-generated task arguments:
 {
   "description": "Improve dashboard accessibility",
   "subagent_type": "frontend-specialist",
+  "task_domain": "frontend",
+  "task_complexity": "simple",
   "model": "openai/gpt-6.1-sol",
-  "model_reason": "Chosen for the implementation and verification demands of this task.",
+  "model_reason": "This bounded accessibility change needs implementation and browser verification. This model is an adequate candidate; more expensive reasoning is not justified by the current scope. Compare the configured billing and quota evidence before dispatch.",
   "model_order": [
     "openai/gpt-6.1-sol",
     "google/antigravity-claude-opus-4-6-thinking",
@@ -80,9 +123,9 @@ Example model-generated task arguments:
 }
 ```
 
-The example IDs are illustrative. A model must be in the specialist's allowlist and OpenCode's current catalog. Quota is rechecked before dispatch. If the requested model becomes blocked, the plugin chooses an eligible alternative from the task-specific order and then the configured order.
+The example IDs are illustrative. A model must be in the specialist's allowlist and OpenCode's current catalog. Quota is rechecked before dispatch. If the requested model becomes blocked, value mode chooses an eligible assessed alternative. Quality mode also permits the remaining configured candidates afterward.
 
-An unconfigured agent continues using native OpenCode behavior. A managed task without an explicit model uses the configured candidate order. Automatic model recovery does not change the specialist role.
+An unconfigured agent continues using native OpenCode behavior. In value mode a managed task must include an explicit model, rationale and alternative order. In quality mode a task without an explicit model uses the configured candidate order. Automatic model recovery does not change the specialist role.
 
 ## Configuration
 
@@ -90,6 +133,9 @@ The default file is `$XDG_CONFIG_HOME/opencode/quality-router.json`, or `~/.conf
 
 | Setting                        | Default                                          | Meaning                                                                                         |
 | ------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `objective`                    | `quality`                                        | `quality` or `value`; value requires a task-specific explicit decision                          |
+| `providerEconomics`            | Unconfigured                                     | Billing/usage guidance keyed by provider ID                                                     |
+| Candidate `economics`          | Provider setting or unknown                      | Account billing, source, notes and optional verified `quotaUnitsPerRequest`                     |
 | `agents`                       | Required                                         | Candidate profiles keyed by existing OpenCode agent name                                        |
 | `agents.<name>.candidates`     | Required                                         | Quality preference order; each entry requires `model`                                           |
 | Candidate `notes` / `evidence` | Optional                                         | Capability guidance and its provenance, shown to the coordinator                                |
@@ -104,7 +150,7 @@ The default file is `$XDG_CONFIG_HOME/opencode/quality-router.json`, or `~/.conf
 | `statePath`                    | OpenCode's XDG state `quality-router/state.json` | Private normalized quota/cooldown state                                                         |
 | `quota.<provider>.enabled`     | Disabled                                         | Explicitly enable a provider's quota query                                                      |
 
-`model_order` can contain only unique models from that agent's allowlist. Unlisted candidates remain available afterward in configured order. Explicit choices outside the allowlist are rejected. Manual conversation choices outside a configured route are preserved and do not receive managed fallback.
+`model_order` can contain only unique models from that agent's allowlist. In quality mode unlisted candidates remain available afterward in configured order; in value mode child recovery uses only the selected model and listed alternatives. Explicit choices outside the allowlist are rejected. Manual conversation choices outside a configured route are preserved and do not receive managed fallback.
 
 When a previous automatic fallback model is carried into a later turn, the router can return to a higher-preference model if its quota and cooldown permit it. It cannot always distinguish a manual re-selection of the same model from the UI carrying that automatic selection forward.
 
@@ -165,7 +211,7 @@ Credentials are read only for authenticated quota queries and never included in 
 
 The public repository contains no personal accounts, keys, runtime state, or local backups. Protect your own configuration and credential files. Logs contain model IDs, not tokens or original provider response bodies. A model rationale is visible in local task metadata; avoid including secrets in it.
 
-There is no spending cap. Adding a paid model to a candidate allowlist authorizes the router to use it during normal selection and recovery. Quality-first selection may choose expensive models. Add only providers you intend to use.
+There is no spending cap. Adding a paid model to a candidate allowlist authorizes the router to use it during normal selection and recovery. Both objectives may choose expensive models when the coordinator judges the task requirements justify them. Value mode is not a hard spending cap. Add only providers you intend to use.
 
 ## Diagnostics
 
@@ -193,14 +239,19 @@ node test/native-integration.mjs --concurrent
 node test/native-integration.mjs --order
 node test/native-integration.mjs --synthetic
 node test/native-integration.mjs --synthetic --root
+node test/native-integration.mjs --value
+node test/native-integration.mjs --value-exhausted
+node test/native-integration.mjs --value-free --concurrent
+node test/native-integration.mjs --migration
 ```
 
-Unit tests cover independent quota windows, account groups, reset interpretation, privacy, concurrent state writes, bounded fallback, cancellation, duplicate events, and recovered result delivery.
+Unit tests cover independent quota windows, account groups, reset interpretation, privacy, concurrent state writes, bounded fallback, cancellation, duplicate events, recovered result delivery, explicit value decisions, unknown costs, account/catalog price separation, cell isolation and independent smoke verifiers.
 
-Integration tests launch the real OpenCode server against a synthetic localhost LLM. They verify explicit model selection, specialist recovery, coordinator recovery, denied task permissions, and concurrent delegation. They use isolated configuration and data directories and make no paid model calls. Set `OPENCODE_BIN` if OpenCode is not on your PATH. A cached OpenCode model catalog can avoid startup network requests.
+Integration tests launch the real OpenCode server against a synthetic localhost LLM. They verify explicit model selection, specialist recovery, coordinator recovery, denied task permissions, concurrent delegation, value-oriented cost context stopping when all assessed alternatives fail, and using a free model for one task and a different model for another task on the same specialist, and replacing a carried old session model at its next user turn. They use isolated configuration and data directories and make no paid model calls. Set `OPENCODE_BIN` if OpenCode is not on your PATH. A cached OpenCode model catalog can avoid startup network requests.
 
 ## References
 
+- [OpenCode Zen pricing](https://opencode.ai/docs/zen/#pricing)
 - [OpenCode agents](https://opencode.ai/docs/agents/)
 - [OpenCode plugins](https://opencode.ai/docs/plugins/)
 - [OpenCode 1.18.31 native task implementation](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/opencode/src/tool/task.ts)

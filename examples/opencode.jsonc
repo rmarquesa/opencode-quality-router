@@ -1,11 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "openai/gpt-6-astra",
+  "model": "openai/gpt-6.1-sol",
   "default_agent": "build",
   "agent": {
     "build": {
       "mode": "primary",
-      "model": "openai/gpt-6-astra",
+      "model": "openai/gpt-6.1-sol",
     },
     "frontend-specialist": {
       "description": "Implement polished, accessible frontend interfaces and verify rendered results.",

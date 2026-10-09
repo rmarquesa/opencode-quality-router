@@ -30,8 +30,8 @@
     "build": {
       "candidates": [
         {
-          "model": "openai/gpt-6-astra",
-          "notes": "Candidate for demanding reasoning, architecture, security and difficult debugging.",
+          "model": "openai/gpt-6.1-sol",
+          "notes": "Candidate for implementation, refactoring and UI engineering.",
           "evidence": {
             "kind": "operator-preference",
             "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
@@ -39,8 +39,8 @@
           "variant": "high"
         },
         {
-          "model": "openai/gpt-6.1-sol",
-          "notes": "Candidate for implementation, refactoring and UI engineering.",
+          "model": "openai/gpt-6-astra",
+          "notes": "Candidate for demanding reasoning, architecture, security and difficult debugging.",
           "evidence": {
             "kind": "operator-preference",
             "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
@@ -55,6 +55,23 @@
             "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
           },
           "variant": "high"
+        },
+        {
+          "model": "openai/gpt-6-luna",
+          "notes": "Consider for bounded tasks when capability evidence and acceptance checks support its use.",
+          "evidence": {
+            "kind": "operator-hypothesis",
+            "note": "Not a measured quality or quota-efficiency ranking."
+          }
+        },
+        {
+          "model": "opencode/big-pickle",
+          "notes": "Evaluate this free candidate against the task requirements and verify the result. No comparative quality benchmark is supplied.",
+          "economics": {
+            "billing": "free",
+            "source": "https://opencode.ai/docs/zen/#pricing (recheck before use)",
+            "notes": "Requires zero live catalog rates; availability remains unconfirmed."
+          }
         }
       ]
     },
@@ -95,8 +112,38 @@
             "note": "Initial preference, not a measured comparative benchmark. Coordinator may reorder for the task."
           },
           "variant": "high"
+        },
+        {
+          "model": "openai/gpt-6-luna",
+          "notes": "Consider for bounded tasks when capability evidence and acceptance checks support its use.",
+          "evidence": {
+            "kind": "operator-hypothesis",
+            "note": "Not a measured quality or quota-efficiency ranking."
+          }
+        },
+        {
+          "model": "opencode/big-pickle",
+          "notes": "Evaluate this free candidate against the task requirements and verify the result. No comparative quality benchmark is supplied.",
+          "economics": {
+            "billing": "free",
+            "source": "https://opencode.ai/docs/zen/#pricing (recheck before use)",
+            "notes": "Requires zero live catalog rates; availability remains unconfirmed."
+          }
         }
       ]
+    }
+  },
+  "objective": "value",
+  "providerEconomics": {
+    "openai": {
+      "billing": "unknown",
+      "source": "configure for your account",
+      "notes": "If using ChatGPT OAuth, verify included capacity. For API access, verify metered billing."
+    },
+    "google": {
+      "billing": "unknown",
+      "source": "configure for your account",
+      "notes": "Antigravity quota is not a verified per-model consumption multiplier."
     }
   }
 }

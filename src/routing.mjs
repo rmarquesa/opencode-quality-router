@@ -9,6 +9,23 @@ export function modelOf(key, variant) {
   };
 }
 export function validateConfig(config) {
+  config.objective ??= "quality";
+  if (!["quality", "value"].includes(config.objective))
+    throw new Error("Invalid routing objective");
+  const checkEconomics = (e) => {
+    if (
+      e?.billing !== undefined &&
+      !["free", "included", "metered", "unknown"].includes(e.billing)
+    )
+      throw new Error("Invalid economics billing mode");
+    if (
+      e?.quotaUnitsPerRequest !== undefined &&
+      (!Number.isFinite(e.quotaUnitsPerRequest) || e.quotaUnitsPerRequest < 0)
+    )
+      throw new Error("Invalid quota units per request");
+  };
+  for (const e of Object.values(config.providerEconomics ?? {}))
+    checkEconomics(e);
   if (!config.agents || !Object.keys(config.agents).length)
     throw new Error("Configure at least one agent");
   for (const [agent, profile] of Object.entries(config.agents)) {
@@ -16,6 +33,7 @@ export function validateConfig(config) {
       throw new Error(`No candidates: ${agent}`);
     const models = new Set();
     for (const c of profile.candidates) {
+      checkEconomics(c.economics);
       modelOf(c.model);
       if (models.has(c.model))
         throw new Error(`Duplicate candidate: ${agent}/${c.model}`);

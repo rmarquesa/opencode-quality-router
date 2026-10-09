@@ -1,7 +1,7 @@
 {
   "name": "opencode-quality-router",
-  "version": "0.1.1",
-  "description": "Quality-first, quota-aware model selection for native OpenCode agents and tasks",
+  "version": "0.2.0",
+  "description": "Task-specific quality/cost model selection and quota-aware fallback for native OpenCode agents",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -41,6 +41,6 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:integration": "node test/native-integration.mjs",
-    "check": "node --check src/index.mjs && node --check src/routing.mjs && node --check src/quotas.mjs && node --check src/store.mjs"
+    "check": "node --check src/index.mjs && node --check src/decision.mjs && node --check src/config.mjs && node --check src/recovery.mjs && node --check src/routing.mjs && node --check src/quotas.mjs && node --check src/store.mjs && node --check src/matrix.mjs && node --check evals/model-routing/run.mjs"
   }
 }
