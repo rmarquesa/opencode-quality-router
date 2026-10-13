@@ -29,7 +29,7 @@ export function classifyError(error) {
     return "retired";
   if (
     (status === 400 || status === 422 || !status) &&
-    /unsupported\s+service[_ -]tier|service[_ -]tier.{0,20}(not supported|unsupported)/i.test(
+    /unsupported\s+service[_ -]tier|service[_ -]tier.{0,20}(not supported|unsupported)|not supported when using Codex with a ChatGPT account/i.test(
       message,
     )
   )

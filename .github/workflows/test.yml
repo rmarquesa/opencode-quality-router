@@ -36,3 +36,4 @@ jobs:
       - run: node test/native-integration.mjs --migration
       - run: node test/native-integration.mjs --compatibility
       - run: node test/native-integration.mjs --synthetic-exhausted
+      - run: node test/native-integration.mjs --comparison-guard

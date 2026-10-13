@@ -237,15 +237,24 @@ test("value delegation requires consulting candidates in the same parent session
     () => h["tool.execute.before"](input, { args: { ...args } }),
     /Consult quota_candidates/,
   );
-  await h.tool.quota_candidates.execute(
-    {
-      agent: "frontend",
-      task: "Bounded UI change",
-      task_domain: "frontend",
-      task_complexity: "simple",
-    },
-    { sessionID: "parent" },
+  const consultation = JSON.parse(
+    await h.tool.quota_candidates.execute(
+      {
+        agent: "frontend",
+        task: "Bounded UI change",
+        task_domain: "frontend",
+        task_complexity: "simple",
+      },
+      { sessionID: "parent" },
+    ),
   );
+  args.comparison_id = consultation.comparison_id;
+  args.model_comparison = consultation.candidates.map((c) => ({
+    model: c.model,
+    fit: "suitable",
+    reason:
+      "Meets concrete UI tool/context requirements; economics remain unknown.",
+  }));
   const output = { args: { ...args } };
   await assert.rejects(
     () =>
@@ -264,20 +273,111 @@ test("value delegation requires consulting candidates in the same parent session
       ),
     /Consult quota_candidates/,
   );
-  for (let i = 0; i < 2; i++)
+  const specificArgs = {
+    agent: "frontend",
+    task: "Compare this bounded task",
+    task_domain: "frontend",
+    task_complexity: "simple",
+    models: ["x/adequate"],
+  };
+  const specific = JSON.parse(
+    await h.tool.quota_candidates.execute(specificArgs, {
+      sessionID: "parent",
+    }),
+  );
+  await assert.rejects(
+    () =>
+      h["tool.execute.before"](input, {
+        args: {
+          ...args,
+          comparison_id: specific.comparison_id,
+          model_comparison: [
+            { model: "x/adequate", fit: "suitable", reason: "Fits the task" },
+          ],
+        },
+      }),
+    /alternative/,
+  );
+  await assert.rejects(
+    () =>
+      h.tool.quota_candidates.execute(
+        {
+          ...specificArgs,
+          task: "Unrelated task",
+          comparison_id: specific.comparison_id,
+        },
+        { sessionID: "parent" },
+      ),
+    /another task/,
+  );
+  const extended = JSON.parse(
     await h.tool.quota_candidates.execute(
       {
-        agent: "frontend",
-        task: "Two bounded tasks",
-        task_domain: "frontend",
-        task_complexity: "simple",
+        ...specificArgs,
+        models: ["x/backup"],
+        comparison_id: specific.comparison_id,
       },
       { sessionID: "parent" },
+    ),
+  );
+  assert.equal(extended.comparison_id, specific.comparison_id);
+  await h["tool.execute.before"](
+    { ...input, callID: "extended" },
+    {
+      args: {
+        ...args,
+        comparison_id: extended.comparison_id,
+        model_comparison: ["x/adequate", "x/backup"].map((model) => ({
+          model,
+          fit: "suitable",
+          reason: "Fits the bounded UI task with tool/context support",
+        })),
+      },
+    },
+  );
+  await h.event({
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          role: "assistant",
+          agent: "frontend",
+          providerID: "x",
+          modelID: "adequate",
+          finish: "stop",
+          time: { completed: Date.now() },
+        },
+      },
+    },
+  });
+  const accessed = JSON.parse(
+    await h.tool.quota_candidates.execute(
+      { ...specificArgs },
+      { sessionID: "parent" },
+    ),
+  );
+  assert.equal(accessed.candidates[0].access.status, "recent_success");
+  assert.equal(accessed.candidates[0].availability.status, "unknown");
+  assert.equal(accessed.candidates[0].assessment.status, "unmeasured");
+  const parallel = [];
+  for (let i = 0; i < 2; i++)
+    parallel.push(
+      JSON.parse(
+        await h.tool.quota_candidates.execute(
+          {
+            agent: "frontend",
+            task: "Bounded task " + i,
+            task_domain: "frontend",
+            task_complexity: "simple",
+          },
+          { sessionID: "parent" },
+        ),
+      ),
     );
   for (let i = 0; i < 2; i++)
     await h["tool.execute.before"](
       { ...input, callID: "parallel-" + i },
-      { args: { ...args } },
+      { args: { ...args, comparison_id: parallel[i].comparison_id } },
     );
 });
 
@@ -382,7 +482,8 @@ test("a 177-model catalog stays discoverable without overflowing native output l
   assert.ok(Buffer.byteLength(raw) < 16384);
   assert.equal(page.candidate_index.length, 177);
   assert.equal(page.candidates.length, 12);
-  assert.equal(page.next_offset, 12);
+  assert.equal(page.next_offset, 0);
+  assert.ok(page.candidates.some((c) => c.model === "x/model-176"));
   assert.equal(page.candidate_index.at(-1).billing, "free");
   const detail = JSON.parse(
     await h.tool.quota_candidates.execute(

@@ -48,6 +48,7 @@ export function validateConfig(config) {
   }
   for (const [k, fallback] of [
     ["quotaTtlMs", 60000],
+    ["accessTtlMs", 86400000],
     ["failureCooldownMs", 900000],
     ["compatibilityCooldownMs", 86400000],
     ["retryDelayMs", 1000],

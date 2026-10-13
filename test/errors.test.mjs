@@ -31,6 +31,15 @@ test("observed unsupported tier and retired model errors are provider failures; 
     "retired",
   );
   assert.equal(classifyError(api(410, "Endpoint is gone")), "unavailable");
+  assert.equal(
+    classifyError(
+      api(
+        400,
+        "The gpt-5.4 model is not supported when using Codex with a ChatGPT account",
+      ),
+    ),
+    "incompatible",
+  );
   for (const e of [
     api(400, "Invalid tool schema"),
     api(400, "Invalid input"),

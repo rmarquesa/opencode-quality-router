@@ -18,7 +18,8 @@ let schemaSeen = false,
 const migration = process.argv.includes("--migration");
 const compatibilityScenario = process.argv.includes("--compatibility");
 const syntheticExhausted = process.argv.includes("--synthetic-exhausted");
-const valueFree = process.argv.includes("--value-free");
+const comparisonGuard = process.argv.includes("--comparison-guard");
+const valueFree = process.argv.includes("--value-free") || comparisonGuard;
 const valueExhausted =
   process.argv.includes("--value-exhausted") || syntheticExhausted;
 const valueScenario =
@@ -144,7 +145,11 @@ const llm = createServer(async (req, res) => {
           tool_calls: [
             {
               index: 0,
-              id: "call_task",
+              id:
+                comparisonGuard &&
+                results.some((r) => r.tool_call_id === "call_task")
+                  ? "call_task_corrected"
+                  : "call_task",
               type: "function",
               function: {
                 name: "task",
@@ -159,6 +164,28 @@ const llm = createServer(async (req, res) => {
                     : "Selected for this test",
                   ...(valueScenario
                     ? {
+                        comparison_id: JSON.parse(
+                          results.find((r) => r.tool_call_id === "call_quota")
+                            .content,
+                        ).comparison_id,
+                        model_comparison: JSON.parse(
+                          results.find((r) => r.tool_call_id === "call_quota")
+                            .content,
+                        )
+                          .candidates.filter(
+                            (c) =>
+                              !comparisonGuard ||
+                              results.some(
+                                (r) => r.tool_call_id === "call_task",
+                              ) ||
+                              c.model.endsWith("/child-selected"),
+                          )
+                          .map((c) => ({
+                            model: c.model,
+                            fit: "suitable",
+                            reason:
+                              "Concrete bounded UI task fits tools/context; compare reference costs without assuming quality from price.",
+                          })),
                         model_order: [
                           `${providerID}/child-backup`,
                           ...(compatibilityScenario
@@ -197,7 +224,26 @@ const llm = createServer(async (req, res) => {
                 model_reason: valueScenario
                   ? "This independent task has complex cross-component requirements; select this model for task fit, with cost considered after expected quality."
                   : "Independent selection",
-                ...(valueScenario ? { model_order: [] } : {}),
+                ...(valueScenario
+                  ? {
+                      model_order: [],
+                      comparison_id: JSON.parse(
+                        results.find(
+                          (r) => r.tool_call_id === "call_quota_complex",
+                        ).content,
+                      ).comparison_id,
+                      model_comparison: JSON.parse(
+                        results.find(
+                          (r) => r.tool_call_id === "call_quota_complex",
+                        ).content,
+                      ).candidates.map((c) => ({
+                        model: c.model,
+                        fit: "suitable",
+                        reason:
+                          "Independent complex task fits tools/context; cost considered after suitability.",
+                      })),
+                    }
+                  : {}),
                 prompt: "Return CHILD_RECOVERED.",
               }),
             },
@@ -562,6 +608,41 @@ try {
       ),
       "Routing marker leaked into child history",
     );
+  }
+  if (valueFree || syntheticExhausted) {
+    const observed = JSON.parse(await readFile(routing.statePath, "utf8"));
+    if (valueFree)
+      assert.ok(
+        observed.access?.[`${providerID}/child-selected`]?.lastSuccessAt,
+        "A successful native response records access without a quality grade",
+      );
+    if (syntheticExhausted)
+      assert.equal(
+        observed.access?.[`${providerID}/child-selected`]?.lastSuccessAt,
+        undefined,
+        "Quota-only text must not count as access success",
+      );
+    assert.equal(
+      observed.evaluations,
+      undefined,
+      "Successful task execution does not invent capability grades",
+    );
+  }
+  if (comparisonGuard) {
+    const transcript = await fetch(
+      base + "/session/" + session.id + "/message",
+    ).then((r) => r.json());
+    const parts = transcript.flatMap((m) => m.parts ?? []);
+    assert.ok(
+      parts.some(
+        (p) =>
+          p.type === "tool" &&
+          p.tool === "task" &&
+          p.state?.status === "error" &&
+          /alternative/.test(p.state.error),
+      ),
+    );
+    assert.equal(calls.filter((m) => m === "child-selected").length, 1);
   }
   console.log(
     JSON.stringify({

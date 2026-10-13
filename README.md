@@ -9,7 +9,7 @@ Your primary agent chooses the model for each delegated task. The plugin checks 
 ## What it does
 
 - Adds `quota_candidates` to inspect candidates, capability notes, quota, and reset times.
-- Extends the native `task` tool with `task_domain`, `task_complexity`, `model`, `model_reason`, and `model_order`.
+- Extends native `task` with domain/complexity, a single-use `comparison_id`, structured `model_comparison`, selected model, rationale and assessed fallback order.
 - Keeps native agent prompts, task permissions, child sessions, and foreground cancellation behavior.
 - Supports concurrent tasks with independent model choices, including tasks targeting the same specialist.
 - Persists normalized quota observations and model failure cooldowns across restarts.
@@ -23,7 +23,7 @@ Set `objective` to `"value"` for task-specific quality/cost decisions or `"quali
 
 In value mode, the primary agent analyzes the task's complexity, risks, capabilities, context and acceptance checks. It compares models capable of doing that task using capability notes, evidence, catalog capabilities and account economics. It should choose a less costly adequate model when a more costly option offers no meaningful expected quality gain, and justify extra cost for tasks where it does. This is a coordinator decision, not a fixed formula dividing an invented quality score by a price.
 
-`quota_candidates` supplies model input/output/cache reference rates, context pricing tiers, context limits, reasoning/tool/image capabilities, account billing mode and available quota. In value mode `candidate_index` lists every eligible model and billing mode alphabetically without a recommendation rank. Detail rows default to 12 per page, avoiding native tool-output truncation for large catalogs. Inspect relevant entries with `models: ["provider/model", ...]` (up to 20), or follow `next_offset` using `offset`; `include_blocked: true` includes blocked rows in page inspection. `details: true` returns full notes and quota windows for the inspected page. The primary must consult the tool with a concrete `task` summary, `task_domain` and `task_complexity` in the current parent session (consultation expires after five minutes), then provide the matching `task_domain`/`task_complexity`, `model`, a nonempty `model_reason` comparing quality/cost, and `model_order` with the acceptable alternatives. Delegations missing that decision are rejected for the primary to reassess. Recovery stays inside the selected model and the assessed alternatives, preserving the primary's order. Use `[]` when there are no acceptable alternatives; the plugin stops rather than silently switching to an unassessed expensive model.
+`quota_candidates` supplies model input/output/cache reference rates, context pricing tiers, context limits, reasoning/tool/image capabilities, account billing mode and available quota. In value mode `candidate_index` lists every eligible model and billing mode alphabetically without a recommendation rank. Default detail rows form a task shortlist of up to 12 candidates, considering declared capabilities/context requirements, matching measured evidence, recent successful access and billing alternatives. This is inspection coverage, not a quality ranking or a requirement to vary winners. Known incompatible requirements and blocked models are excluded from the shortlist; unknown capabilities remain explicit. Responses shrink before native output truncation, and only returned detail rows count as inspected. Use `offset: 0` to browse alphabetical catalog pages; a shortlist response returns `next_offset: 0`. Inspect relevant entries with `models: ["provider/model", ...]` (up to 20), passing the same `comparison_id` and exact task summary, domain, complexity and requirements to extend that comparison, or follow `next_offset` using `offset`; `include_blocked: true` includes blocked rows in page inspection. `details: true` returns full notes and quota windows for the inspected page. The primary must consult the tool with a concrete `task` summary, `task_domain` and `task_complexity` in the current parent session (consultation expires after five minutes), then pass its single-use `comparison_id`, matching domain/complexity, selected `model`, nonempty `model_reason`, `model_order`, and `model_comparison`: entries with `model`, `fit` (`suitable`/`unsuitable`) and a concrete task-specific reason. At least two distinct inspected candidates must be compared when more than one task-compatible candidate exists. A genuinely single candidate needs no invented alternative. The selected model and every fallback must have inspected details and a suitable assessment. A catalog name alone does not authorize a fallback. Repeating the same winner is valid; no rotation, diversity quota or penalty for prior choices is applied. Delegations missing that decision are rejected for the primary to reassess. Recovery stays inside the selected model and the assessed alternatives, preserving the primary's order. Use `[]` when there are no acceptable alternatives; the plugin stops rather than silently switching to an unassessed expensive model.
 
 Configure `providerEconomics` for your actual account. Candidate `economics` overrides a provider entry. Billing may be `free`, `included`, `metered`, or `unknown`. Use `free` only for a provider offer you have verified. A configured free candidate is blocked if its current catalog rates are missing or no longer zero, preventing a promotion ending from silently enabling a paid route. Zero rates alone never imply a free offer. Included subscription quota is a resource, not an API token charge. Zero catalog prices do not prove free or unlimited use. Missing costs and model-specific quota consumption remain unknown. `quotaUnitsPerRequest` is optional and should be set only from verified provider/account evidence; the plugin never guesses a multiplier from a model name or API price.
 
@@ -42,9 +42,13 @@ For example, configure a verified subscription account as follows:
 }
 ```
 
-Each successful candidate consultation authorizes one managed delegation in value mode. Multiple concurrent tasks, including tasks of the same domain/complexity on the same agent, each need their own consultation; a consultation cannot be reused for unrelated work. In quality mode, cost and latency do not rank models. Missing task choices still use configured candidate order, and alternatives omitted from `model_order` remain available afterward.
+Each comparison ID authorizes one managed delegation in value mode. Additional inspections using that ID extend the same comparison rather than authorizing another delegation. Multiple concurrent tasks, including tasks of the same domain/complexity on the same agent, each need their own consultation; a consultation cannot be reused for unrelated work. In quality mode, cost and latency do not rank models. Missing task choices still use configured candidate order, and alternatives omitted from `model_order` remain available afterward.
 
-Capability notes and configured ordering are operator preferences or hypotheses, **not measured benchmarks or a guarantee that one model is universally best**. The quality of selection depends on the coordinator's judgment and available evidence. The plugin validates explicit decisions; it does not validate the truth of a rationale, grade generated code, or automatically escalate after a poor answer. The primary is instructed to verify results and reassess task fit if acceptance checks fail. Initial primary-agent selection remains configured by OpenCode. Use a suitable workhorse model for the primary instead of making every role default to a flagship. With `preserveManualSelection: false`, an old session carrying a managed model switches to the first eligible configured candidate at its next user turn after the plugin is reloaded; running generations are not interrupted. Delegated tasks still honor their explicit choices independently.
+Capability notes and configured ordering are operator preferences or hypotheses, **not measured benchmarks or a guarantee that one model is universally best**. The quality of selection depends on the coordinator's judgment and available evidence. The plugin validates inspection provenance, requirements and explicit comparison records; it does not validate the semantic truth of a rationale, grade generated code, or automatically escalate after a poor answer. The primary is instructed to verify results and reassess task fit if acceptance checks fail. Initial primary-agent selection remains configured by OpenCode. Use a suitable workhorse model for the primary instead of making every role default to a flagship. With `preserveManualSelection: false`, an old session carrying a managed model switches to the first eligible configured candidate at its next user turn after the plugin is reloaded; running generations are not interrupted. Delegated tasks still honor their explicit choices independently.
+
+`access` is a separate signal from `availability` and `assessment`. A completed provider response from a managed session records recent successful access (24 hours by default); failed requests record failure time/category. Exact synthetic quota notices never count as successful access. Recent access does not confirm remaining quota, billing or task correctness. Responses do not automatically populate quality grades. Historical failed access trials retain their dates and failure categories even after cooldown expiry; they are not permanent blocks. A more recent successful response supersedes that access failure. Capability smoke results keep their original domain/complexity scope; old failed trials are not proof that access is still unavailable. The coordinator should not systematically reject an adequate free offer solely because its provider has no quota adapter.
+
+Version 0.3 requires the new comparison fields in value mode. Restart OpenCode to refresh schemas and primary-agent instructions. Old incomplete task arguments are rejected for reassessment; active generations are not interrupted.
 
 Quota is an eligibility check. Catalog membership does not prove available capacity or access, and remaining quota percentage is not a quality/efficiency score. Reference prices come from OpenCode's model catalog and may be stale or account-specific placeholders; they are never confirmed actual charges. Verify billing terms before using them as financial estimates.
 
@@ -67,6 +71,8 @@ The catalog argument is a JSON object mapping `provider/model` to native OpenCod
 ```sh
 node src/cli.mjs matrix --catalog /private/path/to/opencode-model-catalog.json --config /private/path/to/quality-router.json
 ```
+
+A bounded before/after primary-choice diagnostic is available in `evals/comparison/Task.md` and `run.mjs`. It uses frozen catalog evidence and checks inspection provenance, declared capabilities, suitable alternatives and explicit reasons. It does not establish generated-task quality, actual invoice savings or the universally best model. Read the draft spec before running; use a trusted baseline module, a verified included primary and private report paths. Candidate access probes need a working control; a shared authentication failure invalidates the probe environment, not model quality.
 
 ## Installation
 
@@ -100,9 +106,9 @@ Provider credentials must already be configured in OpenCode. This plugin neither
 
 Ask your primary agent to perform a task normally. The plugin adds routing instructions to managed primary agents. The coordinator should:
 
-1. Classify this task and call `quota_candidates` with the specialist, task summary, `task_domain` and `task_complexity`.
-2. Assess the task, then compare capability evidence, availability and economics.
-3. Call native `task` with its selected model, quality/cost rationale and acceptable alternative order.
+1. Classify the task and consult `quota_candidates` with the specialist, concrete summary, domain/complexity and actual `requirements` (tools by default; optional reasoning, image input and minimum context tokens).
+2. Inspect the shortlist and relevant catalog entries. Extend the same comparison when needed; distinguish access, quota and quality evidence.
+3. Call native `task` with the comparison ID, structured per-model fit reasons, selected model, quality/cost rationale and suitable fallback order.
 
 Example model-generated task arguments:
 
@@ -112,6 +118,24 @@ Example model-generated task arguments:
   "subagent_type": "frontend-specialist",
   "task_domain": "frontend",
   "task_complexity": "simple",
+  "comparison_id": "COPY_THE_ID_RETURNED_BY_QUOTA_CANDIDATES",
+  "model_comparison": [
+    {
+      "model": "openai/gpt-6.1-sol",
+      "fit": "suitable",
+      "reason": "Required tools and context fit; verify rendered accessibility. Included quota consumption is unknown."
+    },
+    {
+      "model": "google/antigravity-claude-opus-4-6-thinking",
+      "fit": "suitable",
+      "reason": "Inspected tools/context fit and quota allows this fallback; task quality is unmeasured."
+    },
+    {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "fit": "suitable",
+      "reason": "Inspected capabilities meet the bounded requirements; verify actual behavior rather than assume quality from price."
+    }
+  ],
   "model": "openai/gpt-6.1-sol",
   "model_reason": "This bounded accessibility change needs implementation and browser verification. This model is an adequate candidate; more expensive reasoning is not justified by the current scope. Compare the configured billing and quota evidence before dispatch.",
   "model_order": [
@@ -141,6 +165,7 @@ The default file is `$XDG_CONFIG_HOME/opencode/quality-router.json`, or `~/.conf
 | Candidate `notes` / `evidence` | Optional                                         | Capability guidance and its provenance, shown to the coordinator                                |
 | Candidate `variant`            | Optional                                         | Model-specific reasoning variant; verify supported variants in OpenCode                         |
 | Candidate `billingGroup`       | `premium` for Copilot                            | `premium`, `chat`, or `completions`; only override after verifying the model's billing behavior |
+| `accessTtlMs`                  | `86400000`                                       | How long an observed successful model response is recent; does not confirm quota or quality     |
 | `quotaTtlMs`                   | `60000`                                          | Quota cache freshness period                                                                    |
 | `failureCooldownMs`            | `900000`                                         | Temporary per-model block after a recoverable provider failure                                  |
 | `compatibilityCooldownMs`      | `86400000`                                       | Block a model for 24 hours after an unsupported account service tier                            |
